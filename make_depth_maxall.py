@@ -19,7 +19,7 @@ def main(input_path=Path('./shp'), output_path=Path('./output')):
         if not shp:
             sys.exit('shpフォルダが空です。フォルダ内にシェープファイルを配置してください。')
     else:
-        input_path.makedirs(parents=True)
+        input_path.mkdir(parents=True)
         sys.exit('shpフォルダ内にシェープファイルを配置してください。')
 
     # 処理に用いるシェープファイルの場所（中小河川の山地等表示順位の低いもの）
