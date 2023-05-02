@@ -31,13 +31,14 @@ def main(input_path=Path('./shp'), output_path=Path('./output')):
 
     # シェープファイルをランク別に分けた中間ファイル保存先
     split_path = Path('./split')
-    shutil.rmtree(split_path)
-    os.makedirs(split_path, exist_ok=True)
+    if split_path.exists():
+        shutil.rmtree(split_path)
+    split_path.mkdir(parents=True, exist_ok=True)
 
     # シェープファイルをランク別に分けた中間ファイル保存先（中小河川の山地等表示順位の低いもの）
     if EX:
         ex_split_path = split_path / 'ex'
-        os.makedirs(ex_split_path, exist_ok=True)
+        ex_split_path.mkdir(parents=True, exist_ok=True)
     else:
         if ex_split_path.exists():
             shutil.rmtree(ex_split_path)
@@ -66,7 +67,7 @@ def main(input_path=Path('./shp'), output_path=Path('./output')):
             shutil.rmtree(ex_rank_path)
 
     # 出力先
-    os.makedirs(output_path, exist_ok=True)
+    output_path.mkdir(parents=True, exist_ok=True)
 
     # 想定されるランク一覧
     RANK_EXISTENCE = [1, 2, 3, 4, 5, 6, 7]
