@@ -49,6 +49,7 @@ def main(input_path=Path('./shp'), output_path=Path('./output')):
 
     # 処理に用いるシェープファイルの場所（中小河川の山地等表示順位の低いもの）
     ex_input_path = input_path / 'ex'
+    EX = []
     if ex_input_path.exists():
         EX = [x for x in ex_input_path.glob('*.shp')]
     if EX:
@@ -61,8 +62,8 @@ def main(input_path=Path('./shp'), output_path=Path('./output')):
     split_path.mkdir(parents=True, exist_ok=True)
 
     # シェープファイルをランク別に分けた中間ファイル保存先（中小河川の山地等表示順位の低いもの）
+    ex_split_path = split_path / 'ex'
     if EX:
-        ex_split_path = split_path / 'ex'
         ex_split_path.mkdir(parents=True, exist_ok=True)
     else:
         if ex_split_path.exists():
@@ -77,8 +78,8 @@ def main(input_path=Path('./shp'), output_path=Path('./output')):
         rank_path.mkdir(parents=True, exist_ok=True)
 
     # ランク毎に結合した中間ファイル保存先（中小河川の山地等表示順位の低いもの）
+    ex_rank_path = rank_path / 'ex'
     if EX:
-        ex_rank_path = rank_path / 'ex'
         if ex_rank_path.exists():
             shutil.rmtree(ex_rank_path)
             ex_rank_path.mkdir(parents=True, exist_ok=True)
