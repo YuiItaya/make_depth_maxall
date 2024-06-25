@@ -1,5 +1,3 @@
-# coding: utf_8
-
 import shutil
 import sys
 import time
@@ -26,6 +24,7 @@ def process_depth_shp(depth_shp, is_extra=False):
     if "value" not in depth_gpd.columns and "rank" in depth_gpd.columns:
         depth_gpd = depth_gpd.rename(columns={"rank": "value"})
    
+    depth_gpd["value"] = depth_gpd["value"].astype(int)
     depth_gpd = depth_gpd.loc[:, ["value", "geometry"]].copy().to_crs(epsg=JGD2011)
     depth_name = str(depth_shp)[4:-4] if not is_extra else str(depth_shp)[7:-4]
 
@@ -84,6 +83,7 @@ def process_ranked_data(EX):
                 rank_x_gpd = gpd.read_file(rank_x, encoding='shift-jis')
                 RANKX_gpd = pd.concat([RANKX_gpd, rank_x_gpd]).pipe(gpd.GeoDataFrame)
             else:
+                RANKX_gpd["value"] = RANKX_gpd["value"].astype(int)
                 RANKX_gpd = RANKX_gpd.dissolve()
                 gpkg_file = RANK_PATH / f'Rank_{value}.gpkg'
                 RANKX_gpd.to_file(filename=gpkg_file, driver="GPKG", encoding="shift-jis")
@@ -113,6 +113,7 @@ def process_extra_files():
                 rank_x_gpd = gpd.read_file(rank_x, encoding='shift-jis')
                 RANKX_gpd = pd.concat([RANKX_gpd, rank_x_gpd]).pipe(gpd.GeoDataFrame)
             else:
+                RANKX_gpd["value"] = RANKX_gpd["value"].astype(int)
                 RANKX_gpd = RANKX_gpd.dissolve()
                 gpkg_file = EXTRA_RANK_PATH / f'Rank_{value}.gpkg'
                 RANKX_gpd.to_file(filename=gpkg_file, driver="GPKG", encoding="shift-jis")
@@ -128,6 +129,7 @@ def generate_final_output(EX, RANK_set):
             print("    " + f"RANK{value}をユニオン中・・・")
             RANKX_gpd = gpd.read_file(str(RANK_PATH) + '/Rank_' + str(value) + '.gpkg', encoding='shift-jis').rename(columns={"value": f"value_{value}"})
             RANK_higher_gpd = gpd.overlay(RANKX_gpd, RANK_higher_gpd, how='union').fillna(0)
+            RANK_higher_gpd["value"] = RANK_higher_gpd["value"].astype(int)
             RANK_higher_gpd.loc[RANK_higher_gpd['value'] == 0, 'value'] = int(f'{value}')
             RANK_higher_gpd = RANK_higher_gpd.dissolve(by='value').reset_index()
             del RANK_higher_gpd[f'value_{value}']
@@ -138,6 +140,7 @@ def generate_final_output(EX, RANK_set):
             print("    " + f"RANK{value}をユニオン中・・・")
             RANKX_gpd = gpd.read_file(str(RANK_PATH) + '/Rank_' + str(value) + '.gpkg', encoding='shift-jis').rename(columns={"value": f"value_{value}"})
             RANK_higher_gpd = gpd.overlay(dissolve_gpd, RANKX_gpd, how='union').fillna(0)
+            RANK_higher_gpd["value"] = RANK_higher_gpd["value"].astype(int)
             RANK_higher_gpd.loc[RANK_higher_gpd['value'] == 0, 'value'] = int(f'{value}')
             del RANK_higher_gpd[f'value_{value}']
             RANK_higher_gpd = RANK_higher_gpd.dissolve(by='value').reset_index()
@@ -151,11 +154,11 @@ def generate_final_output(EX, RANK_set):
         print("    " + 'エクストラファイルを処理します。')
         ALL_EX_RANK = [gpd.read_file(x, encoding='shift-jis') for x in EXTRA_RANK_PATH.glob('*_*.gpkg')]
 
-
         dissolve_gpd = RANK_higher_gpd_copy.dissolve().reset_index(drop=True)
         dissolve_gpd['value'] = int(99)
 
         EX_GPD = pd.concat(ALL_EX_RANK).pipe(gpd.GeoDataFrame).reset_index(drop=True)
+        EX_GPD["value"] = EX_GPD["value"].astype(int)
         EX_GPD_dis = EX_GPD.dissolve().reset_index(drop=True)
         EX_GPD_dis = EX_GPD_dis.rename(columns={'value': 'ex_value'})
         EX_GPD_dis['ex_value'] = int(98)
@@ -164,6 +167,7 @@ def generate_final_output(EX, RANK_set):
         del EX_GPD_dis['value']
 
         EX_GPD = gpd.overlay(EX_GPD_dis, EX_GPD, how='union').fillna(0)
+        EX_GPD["value"] = EX_GPD["value"].astype(int)
         EX_GPD = EX_GPD.query('not ex_value == 0').reset_index(drop=True)
         # 誤差により生成される可能性のあるvalue=0を削除
         EX_GPD = EX_GPD.query('not value == 0').reset_index(drop=True)
@@ -173,6 +177,7 @@ def generate_final_output(EX, RANK_set):
         del RANK_higher_gpd_copy['ex_value']
 
     print('4/4_シェープファイル出力中・・・')
+    RANK_higher_gpd_copy["value"] = RANK_higher_gpd_copy["value"].astype(int)
     RANK_higher_gpd_copy.to_file(filename=str(OUTPUT_PATH) + '/output.shp', driver="ESRI Shapefile", encoding="utf-8")
 
 
