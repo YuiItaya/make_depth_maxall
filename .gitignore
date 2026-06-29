@@ -1,6 +1,22 @@
-/rank
+# Local input/output data
 /shp
 /output
 /split
+/rank
 /mask
+
+# Python
+/venv
+__pycache__/
+*.pyc
+
+# Editor
 /.vscode
+
+# Build artifacts
+/build
+/dist
+
+# Logs and temporary files
+*.log
+*.tmp
