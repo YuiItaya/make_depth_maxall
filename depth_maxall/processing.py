@@ -17,7 +17,6 @@ from .constants import (
     EXTRA_SPLIT_PATH,
     INPUT_PATH,
     JGD2011,
-    OUTPUT_PATH,
     RANK_EXISTENCE_SET,
     RANK_PATH,
     SPLIT_PATH,
@@ -41,8 +40,13 @@ def process_depth_shp(
     clip_bounds=None,
     dissolve_input_by_value=False,
     value_mapping=None,
+    value_reclass=None,
     fixed_value=None,
+    split_path=SPLIT_PATH,
+    extra_split_path=EXTRA_SPLIT_PATH,
 ):
+    split_path = Path(split_path)
+    extra_split_path = Path(extra_split_path)
     depth_gpd = read_shapefile(depth_shp)
 
     fixed_value = normalize_fixed_value(fixed_value)
@@ -52,6 +56,7 @@ def process_depth_shp(
             depth_shp,
             field_name,
             value_mapping=value_mapping,
+            value_reclass=value_reclass,
         )
     else:
         depth_gpd = depth_gpd.copy()
@@ -79,7 +84,7 @@ def process_depth_shp(
         depth_gpd = dissolve_input_values(depth_gpd)
 
     depth_name = sanitize_filename(input_name or depth_shp.stem)
-    split_path = EXTRA_SPLIT_PATH if is_extra else SPLIT_PATH
+    split_path = extra_split_path if is_extra else split_path
 
     for value, group in depth_gpd.groupby('value'):
         write_geofile(group, filename=split_path / f'{depth_name}_{value}.gpkg', driver="GPKG", encoding="shift-jis")
@@ -149,8 +154,8 @@ def print_final_warnings(process_reports, dissolve_input_by_value=False):
         print('警告：矩形範囲外のため処理対象から外れた入力ファイルがあります。')
         for report in empty_reports:
             print(f'      {report["path"]}')
-def cleanup_intermediate_files():
-    for path in (SPLIT_PATH, RANK_PATH):
+def cleanup_intermediate_files(paths=None):
+    for path in (paths or (SPLIT_PATH, RANK_PATH)):
         if path.exists():
             shutil.rmtree(path)
 
@@ -182,8 +187,16 @@ def get_rank_values(path: Path):
         for x in path.glob('*_*.gpkg')
         if int(x.stem.rsplit('_', 1)[-1]) != 0
     })
-def process_shapefiles(input_items, clip_bounds=None, dissolve_input_by_value=False):
+def process_shapefiles(
+    input_items,
+    clip_bounds=None,
+    dissolve_input_by_value=False,
+    split_path=SPLIT_PATH,
+    extra_split_path=EXTRA_SPLIT_PATH,
+):
     print('1/4_全シェープファイルをランク毎に分解中・・・')
+    split_path = Path(split_path)
+    extra_split_path = Path(extra_split_path)
     # 並列処理の実行
     reports = []
     total_items = len(input_items)
@@ -201,7 +214,10 @@ def process_shapefiles(input_items, clip_bounds=None, dissolve_input_by_value=Fa
                 clip_bounds=clip_bounds,
                 dissolve_input_by_value=dissolve_input_by_value,
                 value_mapping=item.get("value_mapping"),
+                value_reclass=item.get("value_reclass"),
                 fixed_value=item.get("fixed_value"),
+                split_path=split_path,
+                extra_split_path=extra_split_path,
             ))
 
         # すべての並列タスクが完了するのを待つ
@@ -218,9 +234,19 @@ def process_shapefiles(input_items, clip_bounds=None, dissolve_input_by_value=Fa
                 )
 
     return reports
-def process_ranked_data(EX):
+def process_ranked_data(
+    EX,
+    split_path=SPLIT_PATH,
+    rank_path=RANK_PATH,
+    extra_split_path=EXTRA_SPLIT_PATH,
+    extra_rank_path=EXTRA_RANK_PATH,
+):
     print('2/4_同一ランクを結合します。')
-    RANK_set = get_rank_values(SPLIT_PATH)
+    split_path = Path(split_path)
+    rank_path = Path(rank_path)
+    extra_split_path = Path(extra_split_path)
+    extra_rank_path = Path(extra_rank_path)
+    RANK_set = get_rank_values(split_path)
 
     if not RANK_set:
         raise InputDataError(
@@ -230,24 +256,26 @@ def process_ranked_data(EX):
     for value in RANK_set:
         print("    " + f"RANK{value}をディゾルブ中・・・")
         rank_gdfs = []
-        for rank_x in SPLIT_PATH.glob(f'*_{value}.gpkg'):
+        for rank_x in split_path.glob(f'*_{value}.gpkg'):
             rank_x_gpd = read_geofile(rank_x, encoding='shift-jis')
             rank_gdfs.append(rank_x_gpd)
 
         RANKX_gpd = gpd.GeoDataFrame(pd.concat(rank_gdfs, ignore_index=True), crs=rank_gdfs[0].crs)
         RANKX_gpd["value"] = RANKX_gpd["value"].astype(int)
         RANKX_gpd = RANKX_gpd.dissolve()
-        gpkg_file = RANK_PATH / f'Rank_{value}.gpkg'
+        gpkg_file = rank_path / f'Rank_{value}.gpkg'
         write_geofile(RANKX_gpd, filename=gpkg_file, driver="GPKG", encoding="shift-jis")
 
     EX_RANK_set = []
     if EX:
-        EX_RANK_set = process_extra_files()
+        EX_RANK_set = process_extra_files(extra_split_path, extra_rank_path)
 
     return RANK_set, EX_RANK_set
-def process_extra_files():
+def process_extra_files(extra_split_path=EXTRA_SPLIT_PATH, extra_rank_path=EXTRA_RANK_PATH):
     print("    " + '低優先ファイルを処理します。')
-    EX_RANK_set = get_rank_values(EXTRA_SPLIT_PATH)
+    extra_split_path = Path(extra_split_path)
+    extra_rank_path = Path(extra_rank_path)
+    EX_RANK_set = get_rank_values(extra_split_path)
 
     if not EX_RANK_set:
         print("    " + '低優先ファイルに最終出力対象ランクは存在しませんでした。')
@@ -256,19 +284,29 @@ def process_extra_files():
     for value in EX_RANK_set:
         print("    " + f"RANK{value}をディゾルブ中・・・")
         rank_gdfs = []
-        for rank_x in EXTRA_SPLIT_PATH.glob(f'*_{value}.gpkg'):
+        for rank_x in extra_split_path.glob(f'*_{value}.gpkg'):
             rank_x_gpd = read_geofile(rank_x, encoding='shift-jis')
             rank_gdfs.append(rank_x_gpd)
 
         RANKX_gpd = gpd.GeoDataFrame(pd.concat(rank_gdfs, ignore_index=True), crs=rank_gdfs[0].crs)
         RANKX_gpd["value"] = RANKX_gpd["value"].astype(int)
         RANKX_gpd = RANKX_gpd.dissolve()
-        gpkg_file = EXTRA_RANK_PATH / f'Rank_{value}.gpkg'
+        gpkg_file = extra_rank_path / f'Rank_{value}.gpkg'
         write_geofile(RANKX_gpd, filename=gpkg_file, driver="GPKG", encoding="shift-jis")
 
     return EX_RANK_set
-def generate_final_output(EX, RANK_set, output_path=None, output_field=None, output_epsg=None):
+def generate_final_output(
+    EX,
+    RANK_set,
+    output_path=None,
+    output_field=None,
+    output_epsg=None,
+    rank_path=RANK_PATH,
+    extra_rank_path=EXTRA_RANK_PATH,
+):
     print('3/4_ランク間の重なりを判定し、重複する低ランクを削除します。')
+    rank_path = Path(rank_path)
+    extra_rank_path = Path(extra_rank_path)
     RANK_higher_gpd_copy = None
     dissolve_gpd = None
     output_gdfs = []
@@ -276,13 +314,13 @@ def generate_final_output(EX, RANK_set, output_path=None, output_field=None, out
     for count, value in enumerate(reversed(RANK_set)):
         if count == 0:
             print("    " + f"RANK{value}をコピー中・・・")
-            RANK_higher_gpd = read_geofile(RANK_PATH / f'Rank_{value}.gpkg', encoding='shift-jis')
+            RANK_higher_gpd = read_geofile(rank_path / f'Rank_{value}.gpkg', encoding='shift-jis')
             output_gdfs.append(RANK_higher_gpd)
             dissolve_gpd = RANK_higher_gpd.dissolve().reset_index(drop=True)
             dissolve_gpd['value'] = int(99)
         else:
             print("    " + f"RANK{value}をユニオン中・・・")
-            RANKX_gpd = read_geofile(RANK_PATH / f'Rank_{value}.gpkg', encoding='shift-jis').rename(columns={"value": f"value_{value}"})
+            RANKX_gpd = read_geofile(rank_path / f'Rank_{value}.gpkg', encoding='shift-jis').rename(columns={"value": f"value_{value}"})
             RANK_higher_gpd = gpd.overlay(dissolve_gpd, RANKX_gpd, how='union').fillna(0)
             RANK_higher_gpd["value"] = RANK_higher_gpd["value"].astype(int)
             RANK_higher_gpd.loc[RANK_higher_gpd['value'] == 0, 'value'] = int(f'{value}')
@@ -302,7 +340,7 @@ def generate_final_output(EX, RANK_set, output_path=None, output_field=None, out
     # 低優先ファイルが存在した場合の追加処理
     if EX:
         print("    " + '低優先ファイルを処理します。')
-        ALL_EX_RANK = [read_geofile(x, encoding='shift-jis') for x in EXTRA_RANK_PATH.glob('Rank_*.gpkg')]
+        ALL_EX_RANK = [read_geofile(x, encoding='shift-jis') for x in extra_rank_path.glob('Rank_*.gpkg')]
 
         if not ALL_EX_RANK:
             print("    " + '出力対象となる低優先ファイルはありませんでした。')
@@ -347,6 +385,89 @@ def generate_final_output(EX, RANK_set, output_path=None, output_field=None, out
         RANK_higher_gpd_copy = RANK_higher_gpd_copy.rename(columns={"value": output_field})
 
     write_geofile(RANK_higher_gpd_copy, filename=output_path, driver="ESRI Shapefile", encoding="utf-8")
+def get_group_output_directory(output_path):
+    output_path = Path(output_path or DEFAULT_OUTPUT_FILE)
+    return output_path.parent / f"{output_path.stem}_by_group"
+def get_group_output_path(output_path, group):
+    return get_group_output_directory(output_path) / f"{sanitize_filename(group)}.shp"
+def iter_groups(input_items):
+    groups = {}
+    for item in input_items:
+        group = item.get("group") or item.get("name") or Path(item["path"]).stem
+        groups.setdefault(group, []).append(item)
+    return groups.items()
+def run_processing_pass(
+    input_items,
+    processing,
+    output_path,
+    split_path,
+    rank_path,
+    extra_split_path,
+    extra_rank_path,
+):
+    has_extra = any(item.get("is_extra") for item in input_items)
+    create_directory(split_path, clean=True)
+    create_directory(rank_path, clean=True)
+
+    if has_extra:
+        print('低優先ファイルの存在を確認しました。')
+        create_directory(extra_split_path, clean=True)
+        create_directory(extra_rank_path, clean=True)
+
+    process_reports = process_shapefiles(
+        input_items,
+        clip_bounds=processing.get("clip_bounds"),
+        dissolve_input_by_value=processing.get("dissolve_input_by_value", False),
+        split_path=split_path,
+        extra_split_path=extra_split_path,
+    )
+    RANK_set, _ = process_ranked_data(
+        has_extra,
+        split_path=split_path,
+        rank_path=rank_path,
+        extra_split_path=extra_split_path,
+        extra_rank_path=extra_rank_path,
+    )
+    generate_final_output(
+        has_extra,
+        RANK_set,
+        output_path=output_path,
+        output_field=processing.get("output_field"),
+        output_epsg=processing.get("output_epsg"),
+        rank_path=rank_path,
+        extra_rank_path=extra_rank_path,
+    )
+    return process_reports
+def generate_group_outputs(input_items, processing):
+    group_output_dir = get_group_output_directory(processing.get("output_path"))
+    if group_output_dir.exists():
+        shutil.rmtree(group_output_dir)
+    group_output_dir.mkdir(parents=True, exist_ok=True)
+    print(f'グループ別出力を作成します: {group_output_dir}')
+
+    for group, group_items in iter_groups(input_items):
+        group_name = sanitize_filename(group)
+        print(f'グループ別出力: {group_name}')
+        group_split_path = SPLIT_PATH / "_groups" / group_name / "split"
+        group_rank_path = RANK_PATH / "_groups" / group_name / "rank"
+        group_extra_split_path = group_split_path / "low_priority"
+        group_extra_rank_path = group_rank_path / "low_priority"
+
+        try:
+            run_processing_pass(
+                group_items,
+                processing,
+                get_group_output_path(processing.get("output_path"), group_name),
+                group_split_path,
+                group_rank_path,
+                group_extra_split_path,
+                group_extra_rank_path,
+            )
+        except InputDataError as e:
+            print(f'警告：グループ {group_name} の出力をスキップしました。{e}')
+        finally:
+            if not processing.get("keep_intermediate_files", False):
+                cleanup_intermediate_files((group_split_path, group_rank_path))
 def validate_inputs_before_cleanup(config):
     print('0/4_入力ファイルを検証中・・・', flush=True)
     resolved_group_fields = {}
@@ -368,6 +489,7 @@ def validate_inputs_before_cleanup(config):
                 depth_shp,
                 item.get("field"),
                 value_mapping=item.get("value_mapping"),
+                value_reclass=item.get("value_reclass"),
             )
         else:
             source_field = None
@@ -387,32 +509,21 @@ def run_pipeline(config):
     config = normalize_config(config)
     processing = config["processing"]
     input_items = config["inputs"]
-    has_extra = any(item.get("is_extra") for item in input_items)
 
     validate_inputs_before_cleanup(config)
 
-    create_directory(SPLIT_PATH, clean=True)
-    create_directory(RANK_PATH, clean=True)
-    create_directory(OUTPUT_PATH, clean=False)
-
-    if has_extra:
-        print('低優先ファイルの存在を確認しました。')
-        create_directory(EXTRA_SPLIT_PATH, clean=True)
-        create_directory(EXTRA_RANK_PATH, clean=True)
-
-    process_reports = process_shapefiles(
+    process_reports = run_processing_pass(
         input_items,
-        clip_bounds=processing.get("clip_bounds"),
-        dissolve_input_by_value=processing.get("dissolve_input_by_value", False),
-    )
-    RANK_set, _ = process_ranked_data(has_extra)
-    generate_final_output(
-        has_extra,
-        RANK_set,
         output_path=processing.get("output_path"),
-        output_field=processing.get("output_field"),
-        output_epsg=processing.get("output_epsg"),
+        processing=processing,
+        split_path=SPLIT_PATH,
+        rank_path=RANK_PATH,
+        extra_split_path=EXTRA_SPLIT_PATH,
+        extra_rank_path=EXTRA_RANK_PATH,
     )
+
+    if processing.get("output_group_files", False):
+        generate_group_outputs(input_items, processing)
 
     print('完了しました。')
     end = time.time()

@@ -12,9 +12,14 @@ from .constants import (
     OUTPUT_CRS_CHOICES,
     OUTPUT_CRS_EPSG_TO_LABEL,
     OUTPUT_CRS_LABEL_TO_EPSG,
+    VALUE_RECLASS_ID_TO_LABEL,
+    VALUE_RECLASS_LABEL_TO_ID,
+    VALUE_RECLASS_TEMPLATE_CHOICES,
+    VALUE_RECLASS_TEMPLATES,
 )
 from .errors import InputDataError
 from .io_utils import (
+    get_attribute_field_values,
     get_attribute_fields,
     get_attribute_unique_text_values,
     get_field_conversion_status,
@@ -24,7 +29,7 @@ from .io_utils import (
 from .map_selector import select_clip_bounds_on_map
 from .processing import run_pipeline
 from .utils import format_limited_values, sanitize_filename
-from .validation import normalize_fixed_value, normalize_value_mapping
+from .validation import apply_value_reclass, normalize_fixed_value, normalize_value_mapping, normalize_value_reclass
 
 def launch_gui():
     import contextlib
@@ -65,6 +70,7 @@ def launch_gui():
     output_path_var = tk.StringVar(value=str(DEFAULT_OUTPUT_FILE))
     output_field_var = tk.StringVar(value=DEFAULT_OUTPUT_FIELD)
     output_crs_var = tk.StringVar(value=OUTPUT_CRS_EPSG_TO_LABEL[DEFAULT_OUTPUT_EPSG])
+    output_group_files_var = tk.BooleanVar(value=False)
     clip_vars = [tk.StringVar() for _ in range(4)]
     editor_index = {"value": None}
 
@@ -213,6 +219,11 @@ def launch_gui():
         state="readonly",
         width=42,
     ).grid(row=0, column=6, padx=6, pady=6, sticky="ew")
+    ttk.Checkbutton(
+        output_frame,
+        text="河川・グループ別出力も作成",
+        variable=output_group_files_var,
+    ).grid(row=1, column=0, columnspan=7, padx=6, pady=(0, 6), sticky="w")
 
     log_text = tk.Text(main_frame, height=12, wrap="word")
     log_text.grid(row=6, column=0, columnspan=2, sticky="nsew")
@@ -248,6 +259,7 @@ def launch_gui():
                 item["path"],
                 field,
                 item.get("value_mapping"),
+                item.get("value_reclass"),
             )
         except Exception as e:
             item["warning"] = "▲"
@@ -288,7 +300,11 @@ def launch_gui():
                     (
                         f"固定rank={item.get('fixed_value')}"
                         if item.get("fixed_value") is not None
-                        else item.get("field", "")
+                        else (
+                            f"{item.get('field', '')} / 式:{VALUE_RECLASS_ID_TO_LABEL[item['value_reclass']['template']]}"
+                            if item.get("value_reclass")
+                            else item.get("field", "")
+                        )
                     ),
                     "低優先" if item.get("is_extra") else "通常",
                     item.get("path", ""),
@@ -314,6 +330,19 @@ def launch_gui():
                 return candidate
         return fields[0] if fields else ""
 
+    def make_unique_item_value(base_value, key):
+        base_value = sanitize_filename(base_value)
+        used_values = {item.get(key) for item in input_items}
+        if base_value not in used_values:
+            return base_value
+
+        suffix = 2
+        while True:
+            candidate = sanitize_filename(f"{base_value}_{suffix}")
+            if candidate not in used_values:
+                return candidate
+            suffix += 1
+
     def add_files():
         paths = filedialog.askopenfilenames(
             title="入力シェープファイルを選択",
@@ -331,13 +360,16 @@ def launch_gui():
                 continue
 
             path_stem = sanitize_filename(Path(path).stem)
+            unique_name = make_unique_item_value(path_stem, "name")
+            unique_group = make_unique_item_value(path_stem, "group")
             item = {
                 "path": str(Path(path)),
                 "field": choose_default_field(fields),
                 "fixed_value": None,
                 "is_extra": False,
-                "name": path_stem,
-                "group": path_stem,
+                "name": unique_name,
+                "group": unique_group,
+                "group_user_set": False,
                 "fields": fields,
             }
             update_item_conversion_warning(item)
@@ -389,15 +421,21 @@ def launch_gui():
         new_field = field_var.get() or base_item.get("field")
         new_is_extra = bool(extra_var.get())
         new_mapping = base_item.get("value_mapping")
+        new_reclass = base_item.get("value_reclass")
 
         for index in indices:
             input_items[index]["group"] = new_group
+            input_items[index]["group_user_set"] = True
             input_items[index]["field"] = new_field
             input_items[index]["is_extra"] = new_is_extra
             if input_items[index].get("fixed_value") is not None:
                 input_items[index]["field"] = ""
             if new_mapping:
                 input_items[index]["value_mapping"] = dict(new_mapping)
+                input_items[index].pop("value_reclass", None)
+            if new_reclass:
+                input_items[index]["value_reclass"] = dict(new_reclass)
+                input_items[index].pop("value_mapping", None)
             update_item_conversion_warning(input_items[index])
 
         refresh_tree()
@@ -453,6 +491,7 @@ def launch_gui():
         new_field = field_var.get()
         new_is_extra = bool(extra_var.get())
         new_mapping = input_items[index].get("value_mapping")
+        new_reclass = input_items[index].get("value_reclass")
         fixed_value = None
         if fixed_rank_var.get():
             if not fixed_value_var.get().strip():
@@ -465,8 +504,13 @@ def launch_gui():
                 return
 
         input_items[index]["group"] = new_group
+        if old_group != new_group:
+            input_items[index]["group_user_set"] = True
         input_items[index]["field"] = "" if fixed_value is not None else new_field
         input_items[index]["fixed_value"] = fixed_value
+        if fixed_value is not None:
+            input_items[index].pop("value_mapping", None)
+            input_items[index].pop("value_reclass", None)
         input_items[index]["name"] = sanitize_filename(name_var.get())
         input_items[index]["is_extra"] = new_is_extra
         update_item_conversion_warning(input_items[index])
@@ -479,6 +523,10 @@ def launch_gui():
                     item["is_extra"] = new_is_extra
                     if new_mapping:
                         item["value_mapping"] = dict(new_mapping)
+                        item.pop("value_reclass", None)
+                    if new_reclass:
+                        item["value_reclass"] = dict(new_reclass)
+                        item.pop("value_mapping", None)
                     update_item_conversion_warning(item)
 
         if old_group and old_group != new_group:
@@ -532,6 +580,9 @@ def launch_gui():
         item = input_items[index]
         if item.get("fixed_value") is not None:
             messagebox.showinfo("変換表", "固定rankを使用する行では変換表は不要です。")
+            return
+        if item.get("value_reclass"):
+            messagebox.showinfo("変換表", "式テンプレートを使用する行では個別の変換表は不要です。")
             return
 
         field = item.get("field")
@@ -655,6 +706,7 @@ def launch_gui():
             for target_item in input_items:
                 if target_item.get("group") == group:
                     target_item["value_mapping"] = dict(new_mapping)
+                    target_item.pop("value_reclass", None)
                     update_item_conversion_warning(target_item)
 
             refresh_tree()
@@ -664,6 +716,283 @@ def launch_gui():
             dialog.destroy()
 
         ttk.Button(footer, text="保存", command=save_mapping).pack(side="right", padx=(6, 0))
+        ttk.Button(
+            footer,
+            text="キャンセル",
+            command=lambda: (dialog.grab_release(), dialog.destroy()),
+        ).pack(side="right")
+
+    def open_value_reclass_editor():
+        index = selected_index()
+        if index is None:
+            messagebox.showerror("設定エラー", "式テンプレートを設定する行を選択してください。")
+            return
+
+        item = input_items[index]
+        if item.get("fixed_value") is not None:
+            messagebox.showinfo("式テンプレート", "固定rankを使用する行では式テンプレートは不要です。")
+            return
+
+        field = item.get("field")
+        if not field:
+            messagebox.showerror("設定エラー", "読み取りフィールドを選択してください。")
+            return
+
+        group = item.get("group") or item.get("name") or Path(item["path"]).stem
+        existing_reclass = normalize_value_reclass(item.get("value_reclass"))
+        selected_template_var = tk.StringVar()
+        if existing_reclass:
+            selected_template_var.set(VALUE_RECLASS_ID_TO_LABEL[existing_reclass["template"]])
+        else:
+            selected_template_var.set(VALUE_RECLASS_TEMPLATE_CHOICES[0][0])
+
+        dialog = tk.Toplevel(root)
+        dialog.title("式テンプレート設定")
+        dialog.transient(root)
+        dialog.resizable(True, True)
+        dialog.grab_set()
+        dialog.columnconfigure(1, weight=1)
+        dialog.rowconfigure(3, weight=1)
+
+        ttk.Label(dialog, text=f"グループ「{group}」のフィールド「{field}」に適用します。").grid(
+            row=0,
+            column=0,
+            columnspan=2,
+            padx=10,
+            pady=(10, 6),
+            sticky="w",
+        )
+        ttk.Label(dialog, text="テンプレート").grid(row=1, column=0, padx=10, pady=6, sticky="w")
+        template_combo = ttk.Combobox(
+            dialog,
+            textvariable=selected_template_var,
+            values=[label for label, _template_id in VALUE_RECLASS_TEMPLATE_CHOICES],
+            state="readonly",
+            width=52,
+        )
+        template_combo.grid(row=1, column=1, padx=10, pady=6, sticky="ew")
+
+        description_var = tk.StringVar()
+
+        def update_description(_event=None):
+            template_id = VALUE_RECLASS_LABEL_TO_ID[selected_template_var.get()]
+            description_var.set(VALUE_RECLASS_TEMPLATES[template_id]["description"])
+
+        ttk.Label(dialog, textvariable=description_var, wraplength=620).grid(
+            row=2,
+            column=0,
+            columnspan=2,
+            padx=10,
+            pady=(4, 10),
+            sticky="ew",
+        )
+
+        preview_frame = ttk.LabelFrame(dialog, text="変換プレビュー")
+        preview_frame.grid(row=3, column=0, columnspan=2, padx=10, pady=(0, 10), sticky="nsew")
+        preview_frame.columnconfigure(0, weight=1)
+        preview_frame.rowconfigure(1, weight=1)
+
+        preview_message_var = tk.StringVar()
+        ttk.Label(preview_frame, textvariable=preview_message_var, wraplength=620).grid(
+            row=0,
+            column=0,
+            padx=6,
+            pady=(6, 4),
+            sticky="ew",
+        )
+
+        preview_tree = ttk.Treeview(
+            preview_frame,
+            columns=("rank", "count"),
+            show="headings",
+            height=8,
+        )
+        preview_tree.heading("rank", text="変換後rank")
+        preview_tree.heading("count", text="件数")
+        preview_tree.column("rank", width=160, stretch=True, anchor="center")
+        preview_tree.column("count", width=160, stretch=True, anchor="e")
+        preview_tree.grid(row=1, column=0, padx=(6, 0), pady=(0, 6), sticky="nsew")
+
+        preview_scroll = ttk.Scrollbar(preview_frame, orient="vertical", command=preview_tree.yview)
+        preview_scroll.grid(row=1, column=1, padx=(0, 6), pady=(0, 6), sticky="ns")
+        preview_tree.configure(yscrollcommand=preview_scroll.set)
+
+        preview_queue = queue.Queue()
+        preview_state = {"running": False}
+
+        def clear_preview_rows():
+            for row_id in preview_tree.get_children():
+                preview_tree.delete(row_id)
+
+        def on_template_changed(_event=None):
+            update_description()
+            clear_preview_rows()
+            preview_message_var.set("計算ボタンを押すと、同一グループ内の全レコードを集計します。")
+
+        def calculate_file_counts(target_item, template_id):
+            target_field = target_item.get("field") or field
+            values = get_attribute_field_values(
+                target_item["path"],
+                target_field,
+                max_features=None,
+            )
+            converted = apply_value_reclass(
+                values,
+                {"template": template_id},
+                target_item["path"],
+                target_field,
+            )
+            return {
+                "path": target_item["path"],
+                "record_count": int(len(values)),
+                "rank_counts": converted.astype(int).value_counts().to_dict(),
+            }
+
+        def calculate_preview():
+            if preview_state["running"]:
+                return
+
+            clear_preview_rows()
+            template_id = VALUE_RECLASS_LABEL_TO_ID[selected_template_var.get()]
+
+            target_items = [
+                target_item
+                for target_item in input_items
+                if (
+                    (target_item.get("group") or target_item.get("name") or Path(target_item["path"]).stem) == group
+                    and target_item.get("fixed_value") is None
+                    and Path(target_item.get("path", "")).exists()
+                )
+            ]
+            if not target_items:
+                preview_message_var.set("計算対象の入力ファイルがありません。")
+                return
+
+            preview_state["running"] = True
+            calculate_button.configure(state="disabled")
+            preview_message_var.set(
+                f"計算中です。対象: {len(target_items)}ファイル。"
+                "全レコードを読み込んでrank別件数を集計しています。"
+            )
+
+            def worker():
+                from concurrent.futures import ThreadPoolExecutor, as_completed
+
+                total_counts = {}
+                total_records = 0
+                errors = []
+                max_workers = min(4, len(target_items))
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    future_to_item = {
+                        executor.submit(calculate_file_counts, target_item, template_id): target_item
+                        for target_item in target_items
+                    }
+                    for completed_count, future in enumerate(as_completed(future_to_item), 1):
+                        try:
+                            result = future.result()
+                            total_records += result["record_count"]
+                            for rank, count in result["rank_counts"].items():
+                                total_counts[int(rank)] = total_counts.get(int(rank), 0) + int(count)
+                        except Exception as e:
+                            target_item = future_to_item[future]
+                            errors.append(f'{target_item["path"]}: {e}')
+                        preview_queue.put(("progress", completed_count, len(target_items)))
+
+                preview_queue.put(("done", total_counts, total_records, errors))
+
+            def poll_preview_queue():
+                if not dialog.winfo_exists():
+                    return
+
+                while True:
+                    try:
+                        message = preview_queue.get_nowait()
+                    except queue.Empty:
+                        break
+
+                    if message[0] == "progress":
+                        _kind, completed_count, total_count = message
+                        preview_message_var.set(
+                            f"計算中です。{completed_count}/{total_count}ファイルを処理しました。"
+                        )
+                    elif message[0] == "done":
+                        _kind, total_counts, total_records, errors = message
+                        clear_preview_rows()
+                        for row_index, rank in enumerate(sorted(total_counts), 1):
+                            preview_tree.insert(
+                                "",
+                                "end",
+                                iid=str(row_index),
+                                values=(rank, total_counts[rank]),
+                            )
+
+                        if errors:
+                            preview_message_var.set(
+                                f"計算は完了しましたが、{len(errors)}ファイルでエラーがありました。"
+                                f"総レコード数: {total_records}"
+                            )
+                            messagebox.showerror(
+                                "プレビュー計算エラー",
+                                "一部ファイルの計算に失敗しました。\n\n"
+                                + "\n".join(errors[:10]),
+                                parent=dialog,
+                            )
+                        else:
+                            preview_message_var.set(
+                                f"計算完了。対象: {len(target_items)}ファイル、総レコード数: {total_records}"
+                            )
+
+                        preview_state["running"] = False
+                        calculate_button.configure(state="normal")
+
+                if preview_state["running"]:
+                    dialog.after(100, poll_preview_queue)
+
+            threading.Thread(target=worker, daemon=True).start()
+            dialog.after(100, poll_preview_queue)
+
+        calculate_button = ttk.Button(
+            preview_frame,
+            text="計算",
+            command=calculate_preview,
+        )
+        calculate_button.grid(row=0, column=1, padx=6, pady=(6, 4), sticky="e")
+
+        template_combo.bind("<<ComboboxSelected>>", on_template_changed)
+        on_template_changed()
+
+        footer = ttk.Frame(dialog)
+        footer.grid(row=4, column=0, columnspan=2, padx=10, pady=(0, 10), sticky="ew")
+
+        def save_reclass():
+            template_id = VALUE_RECLASS_LABEL_TO_ID[selected_template_var.get()]
+            new_reclass = {"template": template_id}
+            for target_item in input_items:
+                if target_item.get("group") == group:
+                    target_item["value_reclass"] = dict(new_reclass)
+                    target_item.pop("value_mapping", None)
+                    update_item_conversion_warning(target_item)
+
+            refresh_tree()
+            tree.selection_set(str(index))
+            load_selected_to_editor()
+            dialog.grab_release()
+            dialog.destroy()
+
+        def clear_reclass():
+            for target_item in input_items:
+                if target_item.get("group") == group:
+                    target_item.pop("value_reclass", None)
+                    update_item_conversion_warning(target_item)
+
+            refresh_tree()
+            tree.selection_set(str(index))
+            load_selected_to_editor()
+            dialog.grab_release()
+            dialog.destroy()
+
+        ttk.Button(footer, text="解除", command=clear_reclass).pack(side="left")
+        ttk.Button(footer, text="保存", command=save_reclass).pack(side="right", padx=(6, 0))
         ttk.Button(
             footer,
             text="キャンセル",
@@ -767,11 +1096,14 @@ def launch_gui():
                 "is_extra": bool(item.get("is_extra")),
                 "name": item.get("name") or Path(item["path"]).stem,
                 "group": item.get("group") or item.get("name") or Path(item["path"]).stem,
+                "group_user_set": bool(item.get("group_user_set", False)),
             }
             if item.get("fixed_value") is not None:
                 config_item["fixed_value"] = item.get("fixed_value")
             if item.get("value_mapping"):
                 config_item["value_mapping"] = dict(item["value_mapping"])
+            if item.get("value_reclass"):
+                config_item["value_reclass"] = dict(item["value_reclass"])
             inputs.append(config_item)
 
         return {
@@ -782,6 +1114,7 @@ def launch_gui():
                 "output_path": output_path_var.get().strip(),
                 "output_field": output_field_var.get().strip(),
                 "output_epsg": get_output_epsg_from_gui(),
+                "output_group_files": bool(output_group_files_var.get()),
                 "keep_intermediate_files": bool(keep_intermediate_var.get()),
             },
             "inputs": inputs,
@@ -833,6 +1166,10 @@ def launch_gui():
             item = dict(item)
             item["fields"] = fields
             item["group"] = item.get("group") or item.get("name") or Path(item["path"]).stem
+            if "group_user_set" not in item:
+                item["group_user_set"] = sanitize_filename(item["group"]) != sanitize_filename(Path(item["path"]).stem)
+            else:
+                item["group_user_set"] = bool(item.get("group_user_set"))
             update_item_conversion_warning(item)
             if item.get("missing_path"):
                 missing_count += 1
@@ -850,6 +1187,7 @@ def launch_gui():
         output_crs_var.set(
             OUTPUT_CRS_EPSG_TO_LABEL.get(output_epsg, f"EPSG:{output_epsg}")
         )
+        output_group_files_var.set(bool(processing.get("output_group_files", False)))
 
         refresh_tree()
         load_selected_to_editor()
@@ -858,6 +1196,53 @@ def launch_gui():
                 "読込警告",
                 f"{missing_count}件の入力ファイルが存在しません。一覧の▲行を確認してください。",
             )
+
+    def load_spatial_settings_from_yaml():
+        path = filedialog.askopenfilename(
+            title="YAMLから処理範囲と出力座標系を読み込み",
+            filetypes=(("YAML", "*.yaml *.yml"), ("All files", "*.*")),
+        )
+        if not path:
+            return
+
+        try:
+            config = load_yaml_config(path)
+            processing = dict(config.get("processing") or {})
+            loaded = []
+
+            if "clip_bounds" in processing:
+                bounds = processing.get("clip_bounds")
+                if bounds in (None, ""):
+                    bounds = ["", "", "", ""]
+                if len(bounds) != 4:
+                    raise InputDataError(
+                        "警告：clip_bounds は [minx, miny, maxx, maxy] の4値で指定してください。"
+                    )
+                for index, value in enumerate(bounds):
+                    clip_vars[index].set("" if value is None else str(value))
+                loaded.append("処理範囲")
+
+            if "output_epsg" in processing:
+                output_epsg = int(processing.get("output_epsg") or DEFAULT_OUTPUT_EPSG)
+                output_crs_var.set(
+                    OUTPUT_CRS_EPSG_TO_LABEL.get(output_epsg, f"EPSG:{output_epsg}")
+                )
+                loaded.append("出力座標系")
+        except Exception as e:
+            messagebox.showerror("読込エラー", str(e))
+            return
+
+        if not loaded:
+            messagebox.showwarning(
+                "読込警告",
+                "選択したYAMLに処理範囲または出力座標系の設定が見つかりませんでした。",
+            )
+            return
+
+        messagebox.showinfo(
+            "読込完了",
+            "、".join(loaded) + "を読み込みました。",
+        )
 
     def run_from_gui():
         try:
@@ -909,7 +1294,9 @@ def launch_gui():
     ttk.Button(button_frame, text="削除", command=remove_selected).pack(side="left", padx=(0, 6))
     ttk.Button(button_frame, text="選択を同一グループ", command=set_selected_group).pack(side="left", padx=(0, 6))
     ttk.Button(button_frame, text="変換表設定", command=open_value_mapping_editor).pack(side="left", padx=(0, 6))
+    ttk.Button(button_frame, text="式テンプレート", command=open_value_reclass_editor).pack(side="left", padx=(0, 6))
     ttk.Button(button_frame, text="YAML読込", command=load_config_to_gui).pack(side="left", padx=(0, 6))
+    ttk.Button(button_frame, text="範囲/座標系読込", command=load_spatial_settings_from_yaml).pack(side="left", padx=(0, 6))
     ttk.Button(button_frame, text="YAML保存", command=save_config_from_gui).pack(side="left", padx=(0, 6))
     ttk.Button(button_frame, text="実行", command=run_from_gui).pack(side="right")
     ttk.Button(bounds_frame, text="地図で範囲選択", command=select_bounds_from_map).grid(

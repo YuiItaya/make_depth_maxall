@@ -51,6 +51,34 @@ DEFAULT_VALUE_FIELD_CANDIDATES = (
     "duration",
 )
 
+VALUE_RECLASS_TEMPLATES = {
+    "depth_m": {
+        "label": "浸水深(m): 0, 0.5, 3, 5, 10, 20",
+        "description": "0=0、0<x<0.5=1、0.5以上3未満=2、3以上5未満=3、5以上10未満=4、10以上20未満=5、20以上=6",
+    },
+    "duration_min": {
+        "label": "浸水継続時間(分): 12h, 24h, 3日, 7日, 14日, 28日",
+        "description": "0=0、0<x<720=1、720以上1440未満=2、1440以上4320未満=3、4320以上10080未満=4、10080以上20160未満=5、20160以上40320未満=6、40320以上=7",
+    },
+    "duration_hour": {
+        "label": "浸水継続時間(時間): 12h, 24h, 3日, 7日, 14日, 28日",
+        "description": "0=0、0<x<12=1、12以上24未満=2、24以上72未満=3、72以上168未満=4、168以上336未満=5、336以上672未満=6、672以上=7",
+    },
+    "duration_sec": {
+        "label": "浸水継続時間(秒): 12h, 24h, 3日, 7日, 14日, 28日",
+        "description": "0=0、0<x<43200=1、43200以上86400未満=2、86400以上259200未満=3、259200以上604800未満=4、604800以上1209600未満=5、1209600以上2419200未満=6、2419200以上=7",
+    },
+}
+VALUE_RECLASS_TEMPLATE_CHOICES = [
+    (template["label"], template_id)
+    for template_id, template in VALUE_RECLASS_TEMPLATES.items()
+]
+VALUE_RECLASS_LABEL_TO_ID = dict(VALUE_RECLASS_TEMPLATE_CHOICES)
+VALUE_RECLASS_ID_TO_LABEL = {
+    template_id: template["label"]
+    for template_id, template in VALUE_RECLASS_TEMPLATES.items()
+}
+
 INPUT_PATH = Path('./shp')
 OUTPUT_PATH = Path('./output')
 SPLIT_PATH = Path('./split')

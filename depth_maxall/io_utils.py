@@ -11,7 +11,7 @@ from .constants import FIELD_SAMPLE_SIZE
 from .constants import RANK_EXISTENCE_SET
 from .errors import InputDataError
 from .utils import format_limited_values
-from .validation import normalize_value_mapping
+from .validation import apply_value_reclass, normalize_value_mapping, normalize_value_reclass
 
 
 os.environ.setdefault("CPL_LOG", os.devnull)
@@ -103,7 +103,7 @@ def get_attribute_unique_text_values(shp_path, field_name, limit=200):
         if str(value).strip()
     })
     return unique_values[:limit], len(unique_values)
-def get_field_conversion_status(shp_path, field_name, value_mapping=None):
+def get_field_conversion_status(shp_path, field_name, value_mapping=None, value_reclass=None):
     if not field_name:
         return {
             "needs_mapping": False,
@@ -113,8 +113,26 @@ def get_field_conversion_status(shp_path, field_name, value_mapping=None):
         }
 
     value_mapping = normalize_value_mapping(value_mapping)
+    value_reclass = normalize_value_reclass(value_reclass)
     values = get_attribute_field_values(shp_path, field_name)
     if values.empty:
+        return {
+            "needs_mapping": False,
+            "has_unmapped_values": False,
+            "has_caution": False,
+            "message": "",
+        }
+
+    if value_reclass:
+        try:
+            apply_value_reclass(values, value_reclass, shp_path, field_name)
+        except InputDataError as e:
+            return {
+                "needs_mapping": True,
+                "has_unmapped_values": True,
+                "has_caution": False,
+                "message": str(e),
+            }
         return {
             "needs_mapping": False,
             "has_unmapped_values": False,

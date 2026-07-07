@@ -11,7 +11,9 @@ from .errors import InputDataError
 from .utils import sanitize_filename
 from .validation import (
     get_mapping_signature,
+    get_reclass_signature,
     normalize_fixed_value,
+    normalize_value_reclass,
     normalize_value_mapping,
     validate_output_field_name,
 )
@@ -53,9 +55,11 @@ def normalize_config(config, require_existing_paths=True):
 
     normalized_inputs = []
     used_names = set()
+    used_group_names = set()
     configured_group_fields = {}
     configured_group_extra = {}
     configured_group_mappings = {}
+    configured_group_reclasses = {}
     for index, item in enumerate(inputs, 1):
         path_value = item.get("path")
         if not path_value:
@@ -74,7 +78,21 @@ def normalize_config(config, require_existing_paths=True):
             name = sanitize_filename(f"{name}_{index:03d}")
         used_names.add(name)
 
-        group = sanitize_filename(item.get("group") or item.get("river") or name)
+        raw_group = sanitize_filename(item.get("group") or item.get("river") or name)
+        path_default_group = sanitize_filename(path.stem)
+        if "group_user_set" in item:
+            group_user_set = bool(item.get("group_user_set"))
+        else:
+            group_user_set = raw_group != path_default_group
+
+        group = raw_group
+        if not group_user_set:
+            if group in used_group_names:
+                suffix = 2
+                while sanitize_filename(f"{group}_{suffix}") in used_group_names:
+                    suffix += 1
+                group = sanitize_filename(f"{group}_{suffix}")
+        used_group_names.add(group)
         field = item.get("field") or item.get("value_field")
         is_extra = bool(item.get("is_extra", False))
         fixed_value = normalize_fixed_value(
@@ -83,6 +101,16 @@ def normalize_config(config, require_existing_paths=True):
         value_mapping = normalize_value_mapping(
             item.get("value_mapping", item.get("mapping"))
         )
+        value_reclass = normalize_value_reclass(
+            item.get("value_reclass", item.get("reclass"))
+        )
+        if fixed_value is not None:
+            value_mapping = None
+            value_reclass = None
+        if value_mapping and value_reclass:
+            raise InputDataError(
+                f'警告：inputs[{index}] では value_mapping と value_reclass を同時に指定できません。'
+            )
         if field and fixed_value is None:
             existing_field = configured_group_fields.get(group)
             if existing_field and existing_field != field:
@@ -100,12 +128,27 @@ def normalize_config(config, require_existing_paths=True):
         configured_group_extra[group] = is_extra
 
         if value_mapping:
+            if group in configured_group_reclasses:
+                raise InputDataError(
+                    f'警告：グループ {group} 内で変換表と式テンプレートが混在しています。'
+                )
             existing_mapping = configured_group_mappings.get(group)
             if existing_mapping and get_mapping_signature(existing_mapping) != get_mapping_signature(value_mapping):
                 raise InputDataError(
                     f'警告：グループ {group} 内で変換表の内容が一致していません。'
                 )
             configured_group_mappings[group] = value_mapping
+        if value_reclass:
+            if group in configured_group_mappings:
+                raise InputDataError(
+                    f'警告：グループ {group} 内で変換表と式テンプレートが混在しています。'
+                )
+            existing_reclass = configured_group_reclasses.get(group)
+            if existing_reclass and get_reclass_signature(existing_reclass) != get_reclass_signature(value_reclass):
+                raise InputDataError(
+                    f'警告：グループ {group} 内で式テンプレートの内容が一致していません。'
+                )
+            configured_group_reclasses[group] = value_reclass
 
         normalized_item = {
             "path": str(path),
@@ -113,6 +156,7 @@ def normalize_config(config, require_existing_paths=True):
             "is_extra": is_extra,
             "name": name,
             "group": group,
+            "group_user_set": group_user_set,
         }
         if missing_path:
             normalized_item["missing_path"] = True
@@ -120,12 +164,17 @@ def normalize_config(config, require_existing_paths=True):
             normalized_item["fixed_value"] = fixed_value
         if value_mapping:
             normalized_item["value_mapping"] = value_mapping
+        if value_reclass:
+            normalized_item["value_reclass"] = value_reclass
         normalized_inputs.append(normalized_item)
 
     for item in normalized_inputs:
         group_mapping = configured_group_mappings.get(item["group"])
         if group_mapping:
             item["value_mapping"] = dict(group_mapping)
+        group_reclass = configured_group_reclasses.get(item["group"])
+        if group_reclass:
+            item["value_reclass"] = dict(group_reclass)
 
     return {
         "version": int(config.get("version", 1)),
@@ -135,6 +184,7 @@ def normalize_config(config, require_existing_paths=True):
             "output_path": str(processing.get("output_path") or DEFAULT_OUTPUT_FILE),
             "output_field": output_field,
             "output_epsg": int(processing.get("output_epsg") or DEFAULT_OUTPUT_EPSG),
+            "output_group_files": bool(processing.get("output_group_files", False)),
             "keep_intermediate_files": bool(processing.get("keep_intermediate_files", False)),
         },
         "inputs": normalized_inputs,
@@ -148,6 +198,7 @@ def build_legacy_config():
             "output_path": str(DEFAULT_OUTPUT_FILE),
             "output_field": DEFAULT_OUTPUT_FIELD,
             "output_epsg": DEFAULT_OUTPUT_EPSG,
+            "output_group_files": False,
             "keep_intermediate_files": False,
         },
         "inputs": build_legacy_input_items(),
