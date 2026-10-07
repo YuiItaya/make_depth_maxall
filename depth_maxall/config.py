@@ -26,6 +26,7 @@ def make_input_item(path, field=None, is_extra=False, name=None):
         "is_extra": bool(is_extra),
         "name": name,
         "group": name,
+        "output_group": name,
     }
 def build_legacy_input_items():
     input_items = [
@@ -93,6 +94,12 @@ def normalize_config(config, require_existing_paths=True):
                     suffix += 1
                 group = sanitize_filename(f"{group}_{suffix}")
         used_group_names.add(group)
+        output_group = sanitize_filename(
+            item.get("output_group")
+            or item.get("river_output_group")
+            or group
+        )
+        output_group_user_set = bool(item.get("output_group_user_set", output_group != group))
         field = item.get("field") or item.get("value_field")
         is_extra = bool(item.get("is_extra", False))
         fixed_value = normalize_fixed_value(
@@ -157,6 +164,8 @@ def normalize_config(config, require_existing_paths=True):
             "name": name,
             "group": group,
             "group_user_set": group_user_set,
+            "output_group": output_group,
+            "output_group_user_set": output_group_user_set,
         }
         if missing_path:
             normalized_item["missing_path"] = True

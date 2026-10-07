@@ -66,6 +66,7 @@ def launch_gui():
     field_var = tk.StringVar()
     name_var = tk.StringVar()
     group_var = tk.StringVar()
+    output_group_var = tk.StringVar()
     warning_var = tk.StringVar()
     output_path_var = tk.StringVar(value=str(DEFAULT_OUTPUT_FILE))
     output_field_var = tk.StringVar(value=DEFAULT_OUTPUT_FIELD)
@@ -85,23 +86,25 @@ def launch_gui():
 
     tree = ttk.Treeview(
         main_frame,
-        columns=("warning", "group", "name", "field", "kind", "path"),
+        columns=("warning", "output_group", "group", "name", "field", "kind", "path"),
         show="headings",
         selectmode="extended",
         height=10,
     )
     tree.heading("warning", text="警告")
-    tree.heading("group", text="グループ")
+    tree.heading("output_group", text="河川出力グループ名")
+    tree.heading("group", text="データグループ名")
     tree.heading("name", text="名前")
     tree.heading("field", text="フィールド")
     tree.heading("kind", text="区分")
     tree.heading("path", text="ファイル")
     tree.column("warning", width=45, stretch=False, anchor="center")
-    tree.column("group", width=150, stretch=False)
+    tree.column("output_group", width=170, stretch=False)
+    tree.column("group", width=170, stretch=False)
     tree.column("name", width=150, stretch=False)
     tree.column("field", width=120, stretch=False)
     tree.column("kind", width=70, stretch=False)
-    tree.column("path", width=470, stretch=True)
+    tree.column("path", width=360, stretch=True)
     tree.tag_configure("warning", background="#fff4c2", foreground="#6b4f00")
     tree.tag_configure("caution", background="#edf2f7", foreground="#475569")
     tree.grid(row=0, column=0, sticky="nsew")
@@ -118,28 +121,32 @@ def launch_gui():
     editor.columnconfigure(1, weight=1)
     editor.columnconfigure(3, weight=1)
 
-    ttk.Label(editor, text="グループ").grid(row=0, column=0, padx=6, pady=6, sticky="w")
+    ttk.Label(editor, text="河川出力グループ名").grid(row=0, column=0, padx=6, pady=6, sticky="w")
+    output_group_entry = ttk.Entry(editor, textvariable=output_group_var)
+    output_group_entry.grid(row=0, column=1, padx=6, pady=6, sticky="ew")
+
+    ttk.Label(editor, text="データグループ名").grid(row=0, column=2, padx=6, pady=6, sticky="w")
     group_entry = ttk.Entry(editor, textvariable=group_var)
-    group_entry.grid(row=0, column=1, padx=6, pady=6, sticky="ew")
+    group_entry.grid(row=0, column=3, padx=6, pady=6, sticky="ew")
 
-    ttk.Label(editor, text="名前").grid(row=0, column=2, padx=6, pady=6, sticky="w")
+    ttk.Label(editor, text="名前").grid(row=1, column=0, padx=6, pady=6, sticky="w")
     name_entry = ttk.Entry(editor, textvariable=name_var)
-    name_entry.grid(row=0, column=3, padx=6, pady=6, sticky="ew")
+    name_entry.grid(row=1, column=1, padx=6, pady=6, sticky="ew")
 
-    ttk.Label(editor, text="フィールド").grid(row=0, column=4, padx=6, pady=6, sticky="w")
+    ttk.Label(editor, text="フィールド").grid(row=1, column=2, padx=6, pady=6, sticky="w")
     field_combo = ttk.Combobox(editor, textvariable=field_var, state="readonly", width=20)
-    field_combo.grid(row=0, column=5, padx=6, pady=6, sticky="ew")
+    field_combo.grid(row=1, column=3, padx=6, pady=6, sticky="ew")
 
     fixed_rank_check = ttk.Checkbutton(editor, text="固定rank", variable=fixed_rank_var)
-    fixed_rank_check.grid(row=0, column=6, padx=(6, 2), pady=6, sticky="w")
+    fixed_rank_check.grid(row=1, column=4, padx=(6, 2), pady=6, sticky="w")
     fixed_value_entry = ttk.Entry(editor, textvariable=fixed_value_var, width=6)
-    fixed_value_entry.grid(row=0, column=7, padx=(0, 6), pady=6, sticky="w")
+    fixed_value_entry.grid(row=1, column=5, padx=(0, 6), pady=6, sticky="w")
 
     extra_check = ttk.Checkbutton(editor, text="低優先", variable=extra_var)
-    extra_check.grid(row=0, column=8, padx=6, pady=6, sticky="w")
+    extra_check.grid(row=1, column=6, padx=6, pady=6, sticky="w")
 
     ttk.Label(editor, textvariable=warning_var, foreground="#475569").grid(
-        row=1,
+        row=2,
         column=0,
         columnspan=9,
         padx=6,
@@ -295,6 +302,7 @@ def launch_gui():
                 iid=row_id,
                 values=(
                     item.get("warning", ""),
+                    item.get("output_group") or item.get("group", ""),
                     item.get("group", ""),
                     item.get("name", ""),
                     (
@@ -370,6 +378,8 @@ def launch_gui():
                 "name": unique_name,
                 "group": unique_group,
                 "group_user_set": False,
+                "output_group": unique_group,
+                "output_group_user_set": False,
                 "fields": fields,
             }
             update_item_conversion_warning(item)
@@ -401,6 +411,7 @@ def launch_gui():
             field_var.set("")
             name_var.set("")
             group_var.set("")
+            output_group_var.set("")
             fixed_rank_var.set(False)
             fixed_value_var.set("")
             warning_var.set("")
@@ -424,6 +435,8 @@ def launch_gui():
         new_reclass = base_item.get("value_reclass")
 
         for index in indices:
+            if not input_items[index].get("output_group_user_set", False):
+                input_items[index]["output_group"] = new_group
             input_items[index]["group"] = new_group
             input_items[index]["group_user_set"] = True
             input_items[index]["field"] = new_field
@@ -443,6 +456,32 @@ def launch_gui():
         editor_index["value"] = base_index
         load_selected_to_editor()
 
+    def set_selected_output_group():
+        indices = selected_indices()
+        if not indices:
+            messagebox.showerror("設定エラー", "河川出力グループを設定する行を選択してください。")
+            return
+
+        base_index = indices[0]
+        base_item = input_items[base_index]
+        new_output_group = sanitize_filename(
+            output_group_var.get()
+            or base_item.get("output_group")
+            or base_item.get("group")
+            or base_item.get("name")
+        )
+
+        for index in indices:
+            input_items[index]["output_group"] = new_output_group
+            input_items[index]["output_group_user_set"] = (
+                new_output_group != input_items[index].get("group")
+            )
+
+        refresh_tree()
+        tree.selection_set(*(str(index) for index in indices))
+        editor_index["value"] = base_index
+        load_selected_to_editor()
+
     def load_selected_to_editor(_event=None):
         index = selected_index()
         if index is None:
@@ -451,6 +490,7 @@ def launch_gui():
             field_var.set("")
             name_var.set("")
             group_var.set("")
+            output_group_var.set("")
             fixed_rank_var.set(False)
             fixed_value_var.set("")
             warning_var.set("")
@@ -474,6 +514,7 @@ def launch_gui():
         fixed_value_var.set("" if fixed_value is None else str(fixed_value))
         name_var.set(item.get("name", ""))
         group_var.set(item.get("group") or item.get("name", ""))
+        output_group_var.set(item.get("output_group") or item.get("group") or item.get("name", ""))
         warning_var.set(
             f"{item.get('warning')} {item.get('warning_message', '')}"
             if item.get("warning")
@@ -487,7 +528,13 @@ def launch_gui():
             return
 
         old_group = input_items[index].get("group")
+        old_output_group = input_items[index].get("output_group") or old_group
+        old_output_group_user_set = bool(input_items[index].get("output_group_user_set", False))
         new_group = sanitize_filename(group_var.get())
+        new_output_group = sanitize_filename(output_group_var.get() or new_group)
+        if old_group != new_group and not old_output_group_user_set and old_output_group == old_group:
+            new_output_group = new_group
+            output_group_var.set(new_group)
         new_field = field_var.get()
         new_is_extra = bool(extra_var.get())
         new_mapping = input_items[index].get("value_mapping")
@@ -506,6 +553,8 @@ def launch_gui():
         input_items[index]["group"] = new_group
         if old_group != new_group:
             input_items[index]["group_user_set"] = True
+        input_items[index]["output_group"] = new_output_group
+        input_items[index]["output_group_user_set"] = new_output_group != new_group
         input_items[index]["field"] = "" if fixed_value is not None else new_field
         input_items[index]["fixed_value"] = fixed_value
         if fixed_value is not None:
@@ -518,13 +567,20 @@ def launch_gui():
         if new_group:
             for item in input_items:
                 if item is not input_items[index] and item.get("group") == new_group:
-                    if item.get("fixed_value") is None:
+                    item_fixed_value = item.get("fixed_value")
+                    if item_fixed_value is not None:
+                        item["field"] = ""
+                        item.pop("value_mapping", None)
+                        item.pop("value_reclass", None)
+                    elif fixed_value is None:
                         item["field"] = new_field
                     item["is_extra"] = new_is_extra
-                    if new_mapping:
+                    item["output_group"] = new_output_group
+                    item["output_group_user_set"] = new_output_group != new_group
+                    if fixed_value is None and item_fixed_value is None and new_mapping:
                         item["value_mapping"] = dict(new_mapping)
                         item.pop("value_reclass", None)
-                    if new_reclass:
+                    if fixed_value is None and item_fixed_value is None and new_reclass:
                         item["value_reclass"] = dict(new_reclass)
                         item.pop("value_mapping", None)
                     update_item_conversion_warning(item)
@@ -547,6 +603,8 @@ def launch_gui():
     def on_fixed_rank_toggle():
         if fixed_rank_var.get():
             warning_var.set("固定rankを使用する場合はrank整数を入力してください。")
+            if fixed_value_var.get().strip():
+                apply_editor_to_selected()
             return
         fixed_value_var.set("")
         apply_editor_to_selected()
@@ -1097,6 +1155,8 @@ def launch_gui():
                 "name": item.get("name") or Path(item["path"]).stem,
                 "group": item.get("group") or item.get("name") or Path(item["path"]).stem,
                 "group_user_set": bool(item.get("group_user_set", False)),
+                "output_group": item.get("output_group") or item.get("group") or item.get("name") or Path(item["path"]).stem,
+                "output_group_user_set": bool(item.get("output_group_user_set", False)),
             }
             if item.get("fixed_value") is not None:
                 config_item["fixed_value"] = item.get("fixed_value")
@@ -1170,6 +1230,8 @@ def launch_gui():
                 item["group_user_set"] = sanitize_filename(item["group"]) != sanitize_filename(Path(item["path"]).stem)
             else:
                 item["group_user_set"] = bool(item.get("group_user_set"))
+            item["output_group"] = item.get("output_group") or item.get("group")
+            item["output_group_user_set"] = bool(item.get("output_group_user_set", False))
             update_item_conversion_warning(item)
             if item.get("missing_path"):
                 missing_count += 1
@@ -1244,6 +1306,11 @@ def launch_gui():
             "、".join(loaded) + "を読み込みました。",
         )
 
+    def set_button_frame_state(state: str):
+        for child in button_frame.winfo_children():
+            if "state" in child.keys():
+                child.configure(state=state)
+
     def run_from_gui():
         try:
             config = normalize_config(make_gui_config())
@@ -1255,8 +1322,7 @@ def launch_gui():
         log_text.delete("1.0", "end")
         log_text.configure(state="disabled")
 
-        for child in button_frame.winfo_children():
-            child.configure(state="disabled")
+        set_button_frame_state("disabled")
 
         def worker():
             try:
@@ -1277,13 +1343,11 @@ def launch_gui():
                 if message_type == "log":
                     log(payload)
                 elif message_type == "error":
-                    for child in button_frame.winfo_children():
-                        child.configure(state="normal")
+                    set_button_frame_state("normal")
                     worker_thread["thread"] = None
                     messagebox.showerror("処理エラー", payload)
                 elif message_type == "done":
-                    for child in button_frame.winfo_children():
-                        child.configure(state="normal")
+                    set_button_frame_state("normal")
                     worker_thread["thread"] = None
                     messagebox.showinfo("完了", payload)
         except queue.Empty:
@@ -1292,14 +1356,18 @@ def launch_gui():
 
     ttk.Button(button_frame, text="追加", command=add_files).pack(side="left", padx=(0, 6))
     ttk.Button(button_frame, text="削除", command=remove_selected).pack(side="left", padx=(0, 6))
-    ttk.Button(button_frame, text="選択を同一グループ", command=set_selected_group).pack(side="left", padx=(0, 6))
+    ttk.Separator(button_frame, orient="vertical").pack(side="left", fill="y", padx=(2, 8))
+    ttk.Button(button_frame, text="選択を同一河川出力グループ", command=set_selected_output_group).pack(side="left", padx=(0, 6))
+    ttk.Button(button_frame, text="選択を同一データグループ", command=set_selected_group).pack(side="left", padx=(0, 6))
+    ttk.Separator(button_frame, orient="vertical").pack(side="left", fill="y", padx=(2, 8))
     ttk.Button(button_frame, text="変換表設定", command=open_value_mapping_editor).pack(side="left", padx=(0, 6))
     ttk.Button(button_frame, text="式テンプレート", command=open_value_reclass_editor).pack(side="left", padx=(0, 6))
+    ttk.Separator(button_frame, orient="vertical").pack(side="left", fill="y", padx=(2, 8))
     ttk.Button(button_frame, text="YAML読込", command=load_config_to_gui).pack(side="left", padx=(0, 6))
-    ttk.Button(button_frame, text="範囲/座標系読込", command=load_spatial_settings_from_yaml).pack(side="left", padx=(0, 6))
     ttk.Button(button_frame, text="YAML保存", command=save_config_from_gui).pack(side="left", padx=(0, 6))
     ttk.Button(button_frame, text="実行", command=run_from_gui).pack(side="right")
-    ttk.Button(bounds_frame, text="地図で範囲選択", command=select_bounds_from_map).grid(
+    bounds_button_frame = ttk.Frame(bounds_frame)
+    bounds_button_frame.grid(
         row=2,
         column=0,
         columnspan=10,
@@ -1307,11 +1375,23 @@ def launch_gui():
         pady=(0, 6),
         sticky="w",
     )
+    ttk.Button(bounds_button_frame, text="地図で範囲選択", command=select_bounds_from_map).pack(
+        side="left",
+        padx=(0, 6),
+    )
+    ttk.Button(
+        bounds_button_frame,
+        text="YAMLから範囲/座標系読込",
+        command=load_spatial_settings_from_yaml,
+    ).pack(
+        side="left",
+    )
 
     tree.bind("<<TreeviewSelect>>", load_selected_to_editor)
     field_combo.bind("<<ComboboxSelected>>", apply_editor_to_selected)
     name_entry.bind("<FocusOut>", apply_editor_to_selected)
     group_entry.bind("<FocusOut>", apply_editor_to_selected)
+    output_group_entry.bind("<FocusOut>", apply_editor_to_selected)
     fixed_rank_check.configure(command=on_fixed_rank_toggle)
     fixed_value_entry.bind("<FocusOut>", apply_editor_to_selected)
     extra_check.configure(command=apply_editor_to_selected)

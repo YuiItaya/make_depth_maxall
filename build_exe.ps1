@@ -17,12 +17,27 @@ if (Test-Path $WorkPath) {
     Remove-Item -Recurse -Force $WorkPath
 }
 
-& $Python -m PyInstaller --clean --noconfirm --workpath $WorkPath (Join-Path $Root "make_depth_maxall.spec")
+$TempDist = Join-Path $env:TEMP "make_depth_maxall_pyinstaller_dist"
+if (Test-Path $TempDist) {
+    Remove-Item -Recurse -Force $TempDist
+}
+
+& $Python -m PyInstaller --clean --noconfirm --workpath $WorkPath --distpath $TempDist (Join-Path $Root "make_depth_maxall.spec")
 if ($LASTEXITCODE -ne 0) {
     throw "PyInstallerの実行に失敗しました。"
 }
 
 $Dist = Join-Path $Root "dist\make_depth_maxall"
+$BuiltDist = Join-Path $TempDist "make_depth_maxall"
+if (-not (Test-Path $BuiltDist)) {
+    throw "ビルド成果物が見つかりません: $BuiltDist"
+}
+if (-not (Test-Path $Dist)) {
+    New-Item -ItemType Directory -Path $Dist | Out-Null
+}
+Get-ChildItem $Dist -Force | Remove-Item -Recurse -Force
+Copy-Item -Recurse (Join-Path $BuiltDist "*") $Dist
+
 $DistDocs = Join-Path $Dist "docs"
 if (Test-Path $DistDocs) {
     Remove-Item -Recurse -Force $DistDocs

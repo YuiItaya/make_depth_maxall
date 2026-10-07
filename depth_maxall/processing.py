@@ -390,10 +390,15 @@ def get_group_output_directory(output_path):
     return output_path.parent / f"{output_path.stem}_by_group"
 def get_group_output_path(output_path, group):
     return get_group_output_directory(output_path) / f"{sanitize_filename(group)}.shp"
-def iter_groups(input_items):
+def iter_output_groups(input_items):
     groups = {}
     for item in input_items:
-        group = item.get("group") or item.get("name") or Path(item["path"]).stem
+        group = (
+            item.get("output_group")
+            or item.get("group")
+            or item.get("name")
+            or Path(item["path"]).stem
+        )
         groups.setdefault(group, []).append(item)
     return groups.items()
 def run_processing_pass(
@@ -445,7 +450,7 @@ def generate_group_outputs(input_items, processing):
     group_output_dir.mkdir(parents=True, exist_ok=True)
     print(f'グループ別出力を作成します: {group_output_dir}')
 
-    for group, group_items in iter_groups(input_items):
+    for group, group_items in iter_output_groups(input_items):
         group_name = sanitize_filename(group)
         print(f'グループ別出力: {group_name}')
         group_split_path = SPLIT_PATH / "_groups" / group_name / "split"
