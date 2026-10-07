@@ -22,7 +22,7 @@ from .constants import (
     SPLIT_PATH,
 )
 from .errors import InputDataError
-from .geospatial import clip_to_bounds, dissolve_input_values
+from .geospatial import clip_to_bounds, dissolve_input_values, repair_output_geometries
 from .io_utils import read_geofile, read_shapefile, write_geofile
 from .utils import create_directory, format_elapsed_time, format_values, sanitize_filename
 from .validation import (
@@ -384,7 +384,24 @@ def generate_final_output(
     if output_field != "value":
         RANK_higher_gpd_copy = RANK_higher_gpd_copy.rename(columns={"value": output_field})
 
-    write_geofile(RANK_higher_gpd_copy, filename=output_path, driver="ESRI Shapefile", encoding="utf-8")
+    write_output_shapefile(RANK_higher_gpd_copy, output_path)
+def write_output_shapefile(output_gdf, output_path):
+    # 座標変換・ユニオンで生じた不正ジオメトリを修復してから書き出す
+    output_gdf, repaired_count = repair_output_geometries(output_gdf)
+    write_geofile(output_gdf, filename=output_path, driver="ESRI Shapefile", encoding="utf-8")
+
+    # Shapefileの座標精度への丸めで再び不正になる場合があるため、読み戻して確認する
+    written_gdf = read_geofile(output_path, encoding="utf-8")
+    written_gdf, rewrite_count = repair_output_geometries(written_gdf)
+    if rewrite_count:
+        write_geofile(written_gdf, filename=output_path, driver="ESRI Shapefile", encoding="utf-8")
+        written_gdf = read_geofile(output_path, encoding="utf-8")
+
+    if repaired_count or rewrite_count:
+        print("    " + f'出力ジオメトリを修復しました（{max(repaired_count, rewrite_count)}件）。')
+    still_invalid_count = int((~written_gdf.geometry.is_valid).sum())
+    if still_invalid_count:
+        print("    " + f'警告：{output_path} に修復できない不正なジオメトリが{still_invalid_count}件残っています。')
 def get_group_output_directory(output_path):
     output_path = Path(output_path or DEFAULT_OUTPUT_FILE)
     return output_path.parent / f"{output_path.stem}_by_group"
