@@ -6,6 +6,7 @@ from pathlib import Path
 
 import geopandas as gpd
 import pandas as pd
+import shapely
 
 from .config import build_legacy_config, normalize_config
 from .constants import (
@@ -65,6 +66,8 @@ def process_depth_shp(
         duplicate_values = []
 
     validate_crs(depth_gpd, depth_shp)
+    # Z値付きの入力（県その他河川など）が混ざると出力にもZが残るため、2次元に揃える
+    depth_gpd = depth_gpd.set_geometry(shapely.force_2d(depth_gpd.geometry.values), crs=depth_gpd.crs)
     depth_gpd, repaired_geometry_count = repair_invalid_geometries(depth_gpd, depth_shp)
     values = sorted(depth_gpd["value"].unique().tolist())
     depth_gpd = depth_gpd.loc[:, ["value", "geometry"]].copy().to_crs(epsg=JGD2011)
