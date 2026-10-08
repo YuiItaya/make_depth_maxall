@@ -1,6 +1,7 @@
 import shutil
 import sys
 import time
+from contextlib import contextmanager
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
@@ -32,6 +33,16 @@ from .validation import (
     validate_crs,
     validate_value_column,
 )
+
+@contextmanager
+def stage_timer(label):
+    """工程の所要時間をログに出す（高速化の効果測定用）。"""
+    started = time.perf_counter()
+    try:
+        yield
+    finally:
+        print(f'    [所要時間] {label}: {time.perf_counter() - started:.1f}秒', flush=True)
+
 
 def process_depth_shp(
     depth_shp,
@@ -387,7 +398,8 @@ def generate_final_output(
     if output_field != "value":
         RANK_higher_gpd_copy = RANK_higher_gpd_copy.rename(columns={"value": output_field})
 
-    write_output_shapefile(RANK_higher_gpd_copy, output_path)
+    with stage_timer('4 シェープファイル出力'):
+        write_output_shapefile(RANK_higher_gpd_copy, output_path)
 def write_output_shapefile(output_gdf, output_path):
     # 座標変換・ユニオンで生じた不正ジオメトリを修復してから書き出す
     output_gdf, repaired_count = repair_output_geometries(output_gdf)
@@ -439,29 +451,32 @@ def run_processing_pass(
         create_directory(extra_split_path, clean=True)
         create_directory(extra_rank_path, clean=True)
 
-    process_reports = process_shapefiles(
-        input_items,
-        clip_bounds=processing.get("clip_bounds"),
-        dissolve_input_by_value=processing.get("dissolve_input_by_value", False),
-        split_path=split_path,
-        extra_split_path=extra_split_path,
-    )
-    RANK_set, _ = process_ranked_data(
-        has_extra,
-        split_path=split_path,
-        rank_path=rank_path,
-        extra_split_path=extra_split_path,
-        extra_rank_path=extra_rank_path,
-    )
-    generate_final_output(
-        has_extra,
-        RANK_set,
-        output_path=output_path,
-        output_field=processing.get("output_field"),
-        output_epsg=processing.get("output_epsg"),
-        rank_path=rank_path,
-        extra_rank_path=extra_rank_path,
-    )
+    with stage_timer('1 ランク分解'):
+        process_reports = process_shapefiles(
+            input_items,
+            clip_bounds=processing.get("clip_bounds"),
+            dissolve_input_by_value=processing.get("dissolve_input_by_value", False),
+            split_path=split_path,
+            extra_split_path=extra_split_path,
+        )
+    with stage_timer('2 同一ランク結合'):
+        RANK_set, _ = process_ranked_data(
+            has_extra,
+            split_path=split_path,
+            rank_path=rank_path,
+            extra_split_path=extra_split_path,
+            extra_rank_path=extra_rank_path,
+        )
+    with stage_timer('3-4 重なり削除・出力'):
+        generate_final_output(
+            has_extra,
+            RANK_set,
+            output_path=output_path,
+            output_field=processing.get("output_field"),
+            output_epsg=processing.get("output_epsg"),
+            rank_path=rank_path,
+            extra_rank_path=extra_rank_path,
+        )
     return process_reports
 def generate_group_outputs(input_items, processing):
     group_output_dir = get_group_output_directory(processing.get("output_path"))
@@ -479,15 +494,16 @@ def generate_group_outputs(input_items, processing):
         group_extra_rank_path = group_rank_path / "low_priority"
 
         try:
-            run_processing_pass(
-                group_items,
-                processing,
-                get_group_output_path(processing.get("output_path"), group_name),
-                group_split_path,
-                group_rank_path,
-                group_extra_split_path,
-                group_extra_rank_path,
-            )
+            with stage_timer(f'河川別出力 {group_name}'):
+                run_processing_pass(
+                    group_items,
+                    processing,
+                    get_group_output_path(processing.get("output_path"), group_name),
+                    group_split_path,
+                    group_rank_path,
+                    group_extra_split_path,
+                    group_extra_rank_path,
+                )
         except InputDataError as e:
             print(f'警告：グループ {group_name} の出力をスキップしました。{e}')
         finally:
@@ -535,20 +551,23 @@ def run_pipeline(config):
     processing = config["processing"]
     input_items = config["inputs"]
 
-    validate_inputs_before_cleanup(config)
+    with stage_timer('0 入力検証'):
+        validate_inputs_before_cleanup(config)
 
-    process_reports = run_processing_pass(
-        input_items,
-        output_path=processing.get("output_path"),
-        processing=processing,
-        split_path=SPLIT_PATH,
-        rank_path=RANK_PATH,
-        extra_split_path=EXTRA_SPLIT_PATH,
-        extra_rank_path=EXTRA_RANK_PATH,
-    )
+    with stage_timer('全河川出力（工程1～4）'):
+        process_reports = run_processing_pass(
+            input_items,
+            output_path=processing.get("output_path"),
+            processing=processing,
+            split_path=SPLIT_PATH,
+            rank_path=RANK_PATH,
+            extra_split_path=EXTRA_SPLIT_PATH,
+            extra_rank_path=EXTRA_RANK_PATH,
+        )
 
     if processing.get("output_group_files", False):
-        generate_group_outputs(input_items, processing)
+        with stage_timer('河川別出力（全グループ）'):
+            generate_group_outputs(input_items, processing)
 
     print('完了しました。')
     end = time.time()
