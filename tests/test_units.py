@@ -99,6 +99,21 @@ class ValueTest(unittest.TestCase):
         with self.assertRaises(InputDataError):
             validate_value_column(pd.DataFrame({"rank": [1]}), "test.shp", "depth")
 
+    def test_ksj_flood_rank_fields_are_read_by_default(self):
+        # 国土数値情報 洪水浸水想定区域のランク属性は、フィールド指定なしで読み取られる
+        for field, values in (("A31a_205", [1, 4]), ("A31a_105", [2, 3]), ("A31a_305", [1, 3]),
+                              ("A31_205", ["1", "6"]), ("A31_105", ["2"]), ("A31_305", ["7"])):
+            df = pd.DataFrame({field.replace("5", "1"): ["8303030555"] * len(values), field: values})
+            out, source_field, _ = validate_value_column(df, "A31.shp")
+            self.assertEqual(source_field, field)
+            self.assertEqual(out["value"].tolist(), [int(v) for v in values])
+
+    def test_ksj_non_rank_fields_are_not_read_by_default(self):
+        # 家屋倒壊（種別コード）や平成24年度版（11～15の別体系）は標準では読まない
+        for field in ("A31a_405", "A31_001"):
+            with self.assertRaises(InputDataError, msg=field):
+                validate_value_column(pd.DataFrame({field: [2]}), "A31.shp")
+
     def test_fixed_value(self):
         self.assertIsNone(normalize_fixed_value(""))
         self.assertEqual(normalize_fixed_value("3"), 3)
