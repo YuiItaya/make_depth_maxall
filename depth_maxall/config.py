@@ -76,7 +76,13 @@ def normalize_config(config, require_existing_paths=True):
 
         name = sanitize_filename(item.get("name") or path.stem)
         if name in used_names:
-            name = sanitize_filename(f"{name}_{index:03d}")
+            # 中間ファイル名（<name>_<rank>.gpkg）が重なると別入力のデータで上書きされるため、
+            # 付け直した名前も既存の名前と重ならないことを確かめる
+            base_name, suffix = name, index
+            name = sanitize_filename(f"{base_name}_{suffix:03d}")
+            while name in used_names:
+                suffix += 1
+                name = sanitize_filename(f"{base_name}_{suffix:03d}")
         used_names.add(name)
 
         raw_group = sanitize_filename(item.get("group") or item.get("river") or name)
