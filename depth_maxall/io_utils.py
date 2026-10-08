@@ -56,6 +56,14 @@ def read_shapefile(shp_path, max_features=None):
             max_features=max_features,
             on_invalid='fix',
         )
+
+
+def read_shapefile_attributes(shp_path):
+    """属性とCRSだけを読む（形状を読まないため、入力検証が速い）。戻り値: (DataFrame, CRS or None)"""
+    with suppress_noisy_gdal_warnings():
+        attributes = pyogrio.read_dataframe(shp_path, encoding='shift-jis', read_geometry=False)
+        crs = pyogrio.read_info(shp_path, encoding='shift-jis').get("crs")
+    return attributes, crs
 def load_yaml_config(config_path):
     try:
         import yaml

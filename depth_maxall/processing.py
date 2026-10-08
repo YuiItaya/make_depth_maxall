@@ -25,7 +25,7 @@ from .constants import (
 )
 from .errors import InputDataError
 from .geospatial import clip_to_bounds, dissolve_input_values, repair_output_geometries
-from .io_utils import read_geofile, read_shapefile, write_geofile
+from .io_utils import read_geofile, read_shapefile, read_shapefile_attributes, write_geofile
 from .utils import create_directory, format_elapsed_time, format_values, sanitize_filename
 from .validation import (
     normalize_fixed_value,
@@ -522,11 +522,12 @@ def validate_inputs_before_cleanup(config):
                 f'    入力検証進捗: {index}/{total_items}件 ({depth_shp.name})',
                 flush=True,
             )
-        depth_gpd = read_shapefile(depth_shp)
+        # 検証は列・値・CRSだけを見るので、形状は読まない
+        attributes, crs = read_shapefile_attributes(depth_shp)
         fixed_value = normalize_fixed_value(item.get("fixed_value"))
         if fixed_value is None:
             _, source_field, _ = validate_value_column(
-                depth_gpd,
+                attributes,
                 depth_shp,
                 item.get("field"),
                 value_mapping=item.get("value_mapping"),
@@ -534,7 +535,10 @@ def validate_inputs_before_cleanup(config):
             )
         else:
             source_field = None
-        validate_crs(depth_gpd, depth_shp)
+        if crs is None:
+            raise InputDataError(
+                f"警告：{depth_shp} のCRSが未設定のため、処理を終了します。"
+            )
 
         group = item.get("group") or item.get("name") or depth_shp.stem
         if source_field:
