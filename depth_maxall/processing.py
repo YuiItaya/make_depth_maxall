@@ -1,3 +1,6 @@
+import contextlib
+import io
+import os
 import shutil
 import sys
 import time
@@ -417,6 +420,25 @@ def iter_output_groups(input_items):
         )
         groups.setdefault(group, []).append(item)
     return groups.items()
+def copy_split_files(input_items, source_split_path, source_extra_split_path, split_path, extra_split_path):
+    """全河川の処理で作ったランク分解結果（入力ごとの <name>_<rank>.gpkg）を複製する。
+
+    河川別出力で同じ入力を読み直してランク分解するのを省くため。入力名は設定の正規化で
+    一意になっている。名前の前方一致ではなく「最後の _ より前が入力名と一致」で選ぶ。
+    """
+    copied = 0
+    for item in input_items:
+        name = sanitize_filename(item.get("name") or Path(item["path"]).stem)
+        source = Path(source_extra_split_path if item.get("is_extra") else source_split_path)
+        target = Path(extra_split_path if item.get("is_extra") else split_path)
+        for gpkg in source.glob('*_*.gpkg'):
+            if gpkg.stem.rsplit('_', 1)[0] == name:
+                shutil.copy2(gpkg, target / gpkg.name)
+                copied += 1
+    print(f'    全河川のランク分解結果を再利用しました（{copied}ファイル）。')
+    return []
+
+
 def run_processing_pass(
     input_items,
     processing,
@@ -425,6 +447,7 @@ def run_processing_pass(
     rank_path,
     extra_split_path,
     extra_rank_path,
+    reuse_split=None,
 ):
     has_extra = any(item.get("is_extra") for item in input_items)
     create_directory(split_path, clean=True)
@@ -436,13 +459,16 @@ def run_processing_pass(
         create_directory(extra_rank_path, clean=True)
 
     with stage_timer('1 ランク分解'):
-        process_reports = process_shapefiles(
-            input_items,
-            clip_bounds=processing.get("clip_bounds"),
-            dissolve_input_by_value=processing.get("dissolve_input_by_value", False),
-            split_path=split_path,
-            extra_split_path=extra_split_path,
-        )
+        if reuse_split:
+            process_reports = copy_split_files(input_items, *reuse_split, split_path, extra_split_path)
+        else:
+            process_reports = process_shapefiles(
+                input_items,
+                clip_bounds=processing.get("clip_bounds"),
+                dissolve_input_by_value=processing.get("dissolve_input_by_value", False),
+                split_path=split_path,
+                extra_split_path=extra_split_path,
+            )
     with stage_timer('2 同一ランク結合'):
         RANK_set, _ = process_ranked_data(
             has_extra,
@@ -462,22 +488,20 @@ def run_processing_pass(
             extra_rank_path=extra_rank_path,
         )
     return process_reports
-def generate_group_outputs(input_items, processing):
-    group_output_dir = get_group_output_directory(processing.get("output_path"))
-    if group_output_dir.exists():
-        shutil.rmtree(group_output_dir)
-    group_output_dir.mkdir(parents=True, exist_ok=True)
-    print(f'グループ別出力を作成します: {group_output_dir}')
+def _run_group_job(job):
+    """河川別出力1グループ分（子プロセスで実行）。ログは親へ返して表示する。
 
-    for group, group_items in iter_output_groups(input_items):
-        group_name = sanitize_filename(group)
-        print(f'グループ別出力: {group_name}')
-        group_split_path = SPLIT_PATH / "_groups" / group_name / "split"
-        group_rank_path = RANK_PATH / "_groups" / group_name / "rank"
-        group_extra_split_path = group_split_path / "low_priority"
-        group_extra_rank_path = group_rank_path / "low_priority"
-
-        try:
+    GUIは同一プロセス内で標準出力をログ欄へ流しているため、子プロセスが直接表示した
+    内容は表示されない。ここでためて返し、親プロセスがまとめて表示する。
+    """
+    group_name, group_items, processing, reuse_split = job
+    group_split_path = SPLIT_PATH / "_groups" / group_name / "split"
+    group_rank_path = RANK_PATH / "_groups" / group_name / "rank"
+    log = io.StringIO()
+    warning = None
+    try:
+        with contextlib.redirect_stdout(log):
+            print(f'グループ別出力: {group_name}')
             with stage_timer(f'河川別出力 {group_name}'):
                 run_processing_pass(
                     group_items,
@@ -485,14 +509,48 @@ def generate_group_outputs(input_items, processing):
                     get_group_output_path(processing.get("output_path"), group_name),
                     group_split_path,
                     group_rank_path,
-                    group_extra_split_path,
-                    group_extra_rank_path,
+                    group_split_path / "low_priority",
+                    group_rank_path / "low_priority",
+                    reuse_split=reuse_split,
                 )
-        except InputDataError as e:
-            print(f'警告：グループ {group_name} の出力をスキップしました。{e}')
-        finally:
-            if not processing.get("keep_intermediate_files", False):
-                cleanup_intermediate_files((group_split_path, group_rank_path))
+    except InputDataError as e:
+        warning = f'警告：グループ {group_name} の出力をスキップしました。{e}'
+    finally:
+        if not processing.get("keep_intermediate_files", False):
+            cleanup_intermediate_files((group_split_path, group_rank_path))
+    return log.getvalue(), warning
+
+
+def generate_group_outputs(input_items, processing, reuse_split=None):
+    group_output_dir = get_group_output_directory(processing.get("output_path"))
+    if group_output_dir.exists():
+        shutil.rmtree(group_output_dir)
+    group_output_dir.mkdir(parents=True, exist_ok=True)
+    print(f'グループ別出力を作成します: {group_output_dir}')
+
+    jobs = [
+        (sanitize_filename(group), group_items, processing, reuse_split)
+        for group, group_items in iter_output_groups(input_items)
+    ]
+    if not reuse_split:
+        # ランク分解を各グループで行う場合は、その中で並列処理するため順番に処理する
+        for job in jobs:
+            log, warning = _run_group_job(job)
+            print(log, end='')
+            if warning:
+                print(warning)
+        return
+
+    # ランク分解を再利用する場合、各グループは独立しているので並列に処理する
+    max_workers = max(1, min(len(jobs), os.cpu_count() or 1))
+    print(f'    {len(jobs)}グループを並列処理します（最大{max_workers}並列）。', flush=True)
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(_run_group_job, job) for job in jobs]
+        for future in as_completed(futures):
+            log, warning = future.result()
+            print(log, end='', flush=True)
+            if warning:
+                print(warning, flush=True)
 def validate_inputs_before_cleanup(config):
     print('0/4_入力ファイルを検証中・・・', flush=True)
     resolved_group_fields = {}
@@ -555,7 +613,7 @@ def run_pipeline(config):
 
     if processing.get("output_group_files", False):
         with stage_timer('河川別出力（全グループ）'):
-            generate_group_outputs(input_items, processing)
+            generate_group_outputs(input_items, processing, reuse_split=(SPLIT_PATH, EXTRA_SPLIT_PATH))
 
     print('完了しました。')
     end = time.time()
