@@ -31,6 +31,27 @@ def clip_to_bounds(depth_gpd, clip_bounds):
     )
     clipped = gpd.clip(depth_gpd, clip_geom)
     return clipped.reset_index(drop=True)
+def polygon_parts(geometries):
+    """集約済みの形状から面だけを取り出して1つの MultiPolygon にする。
+
+    ランク別に集約した面には、切り出し等で生じた線・点の切れ端が混ざる（GeometryCollection）。
+    そのままだと差分・結合の計算が数倍遅くなるため、面だけを残す。集約済みで面どうしは
+    重ならないので、結合し直さずに部品を並べるだけでよい。
+    """
+    import shapely
+
+    polygons = []
+    for geometry in geometries:
+        for part in shapely.get_parts(geometry):
+            if part.geom_type == "Polygon":
+                polygons.append(part)
+            elif part.geom_type == "MultiPolygon":
+                polygons.extend(shapely.get_parts(part))
+            elif part.geom_type == "GeometryCollection":
+                polygons.extend(shapely.get_parts(polygon_parts([part])))
+    return shapely.MultiPolygon(polygons) if polygons else shapely.MultiPolygon()
+
+
 def dissolve_input_values(depth_gpd):
     return depth_gpd.dissolve(by="value").reset_index()
 def _extract_polygonal(geom):

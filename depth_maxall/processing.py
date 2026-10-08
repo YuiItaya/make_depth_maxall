@@ -24,7 +24,7 @@ from .constants import (
     SPLIT_PATH,
 )
 from .errors import InputDataError
-from .geospatial import clip_to_bounds, dissolve_input_values, repair_output_geometries
+from .geospatial import clip_to_bounds, dissolve_input_values, polygon_parts, repair_output_geometries
 from .io_utils import read_geofile, read_shapefile, read_shapefile_attributes, write_geofile
 from .utils import create_directory, format_elapsed_time, format_values, sanitize_filename
 from .validation import (
@@ -321,37 +321,32 @@ def generate_final_output(
     print('3/4_ランク間の重なりを判定し、重複する低ランクを削除します。')
     rank_path = Path(rank_path)
     extra_rank_path = Path(extra_rank_path)
-    RANK_higher_gpd_copy = None
-    dissolve_gpd = None
-    output_gdfs = []
 
-    for count, value in enumerate(reversed(RANK_set)):
-        if count == 0:
+    # 高いランクから順に「そのランクの面 − より高いランクの面の和」を残す。
+    # 以前は union の重ね合わせ→ランク別に集約→上位(99)を除外としていたが、
+    # 結果は差分と同じで、巨大な面どうしの重ね合わせを避けられるため大幅に速い。
+    output_rows = []
+    higher_union = None
+    crs = None
+    for value in reversed(RANK_set):
+        rank_gpd = read_geofile(rank_path / f'Rank_{value}.gpkg', encoding='shift-jis')
+        crs = rank_gpd.crs
+        rank_geom = polygon_parts(rank_gpd.geometry.values)
+        if higher_union is None:
             print("    " + f"RANK{value}をコピー中・・・")
-            RANK_higher_gpd = read_geofile(rank_path / f'Rank_{value}.gpkg', encoding='shift-jis')
-            output_gdfs.append(RANK_higher_gpd)
-            dissolve_gpd = RANK_higher_gpd.dissolve().reset_index(drop=True)
-            dissolve_gpd['value'] = int(99)
+            remaining = rank_geom
+            higher_union = rank_geom
         else:
-            print("    " + f"RANK{value}をユニオン中・・・")
-            RANKX_gpd = read_geofile(rank_path / f'Rank_{value}.gpkg', encoding='shift-jis').rename(columns={"value": f"value_{value}"})
-            RANK_higher_gpd = gpd.overlay(dissolve_gpd, RANKX_gpd, how='union').fillna(0)
-            RANK_higher_gpd["value"] = RANK_higher_gpd["value"].astype(int)
-            RANK_higher_gpd.loc[RANK_higher_gpd['value'] == 0, 'value'] = int(f'{value}')
-            del RANK_higher_gpd[f'value_{value}']
-            RANK_higher_gpd = RANK_higher_gpd.dissolve(by='value').reset_index()
-            dissolve_gpd = RANK_higher_gpd.dissolve().reset_index(drop=True)
-            dissolve_gpd['value'] = int(99)
-            RANK_higher_gpd = RANK_higher_gpd.query('not value == 99')
-            output_gdfs.append(RANK_higher_gpd)
+            print("    " + f"RANK{value}から上位ランクを除外中・・・")
+            remaining = shapely.difference(rank_geom, higher_union)
+            higher_union = shapely.union(higher_union, rank_geom)
+        remaining = polygon_parts([remaining])
+        if not remaining.is_empty:
+            output_rows.append({"value": int(value), "geometry": remaining})
 
-    if output_gdfs:
-        RANK_higher_gpd_copy = gpd.GeoDataFrame(
-            pd.concat(output_gdfs, ignore_index=True),
-            crs=output_gdfs[0].crs,
-        )
+    RANK_higher_gpd_copy = gpd.GeoDataFrame(output_rows, geometry="geometry", crs=crs)
 
-    # 低優先ファイルが存在した場合の追加処理
+    # 低優先ファイルは、通常データが無い範囲だけを各ランクのまま追加する
     if EX:
         print("    " + '低優先ファイルを処理します。')
         ALL_EX_RANK = [read_geofile(x, encoding='shift-jis') for x in extra_rank_path.glob('Rank_*.gpkg')]
@@ -359,32 +354,21 @@ def generate_final_output(
         if not ALL_EX_RANK:
             print("    " + '出力対象となる低優先ファイルはありませんでした。')
         else:
-            dissolve_gpd = RANK_higher_gpd_copy.dissolve().reset_index(drop=True)
-            dissolve_gpd['value'] = int(99)
-
-            EX_GPD = gpd.GeoDataFrame(pd.concat(ALL_EX_RANK, ignore_index=True), crs=ALL_EX_RANK[0].crs).reset_index(drop=True)
-            EX_GPD["value"] = EX_GPD["value"].astype(int)
-            EX_GPD_dis = EX_GPD.dissolve().reset_index(drop=True)
-            EX_GPD_dis = EX_GPD_dis.rename(columns={'value': 'ex_value'})
-            EX_GPD_dis['ex_value'] = int(98)
-            EX_GPD_dis = gpd.overlay(dissolve_gpd, EX_GPD_dis, how='union').fillna(0)
-            EX_GPD_dis = EX_GPD_dis.query('not value == 99').reset_index(drop=True)
-            del EX_GPD_dis['value']
-
-            EX_GPD = gpd.overlay(EX_GPD_dis, EX_GPD, how='union').fillna(0)
-            EX_GPD["value"] = EX_GPD["value"].astype(int)
-            EX_GPD = EX_GPD.query('not ex_value == 0').reset_index(drop=True)
-            # 誤差により生成される可能性のあるvalue=0を削除
-            EX_GPD = EX_GPD.query('not value == 0').reset_index(drop=True)
-
-            RANK_higher_gpd_copy = gpd.GeoDataFrame(
-                pd.concat([RANK_higher_gpd_copy, EX_GPD], ignore_index=True),
-                crs=RANK_higher_gpd_copy.crs,
-            )
-            RANK_higher_gpd_copy = RANK_higher_gpd_copy.dissolve(by='value').reset_index()
-
-            if 'ex_value' in RANK_higher_gpd_copy.columns:
-                del RANK_higher_gpd_copy['ex_value']
+            extra_rows = []
+            for extra_gpd in ALL_EX_RANK:
+                for value, group in extra_gpd.groupby("value"):
+                    extra_geom = polygon_parts(group.geometry.values)
+                    if higher_union is not None:
+                        extra_geom = polygon_parts([shapely.difference(extra_geom, higher_union)])
+                    if not extra_geom.is_empty and int(value) != 0:
+                        extra_rows.append({"value": int(value), "geometry": extra_geom})
+            if extra_rows:
+                RANK_higher_gpd_copy = gpd.GeoDataFrame(
+                    pd.concat([RANK_higher_gpd_copy, gpd.GeoDataFrame(extra_rows, geometry="geometry", crs=crs)],
+                              ignore_index=True),
+                    crs=crs,
+                )
+                RANK_higher_gpd_copy = RANK_higher_gpd_copy.dissolve(by='value').reset_index()
 
     print('4/4_シェープファイル出力中・・・')
     output_path = Path(output_path or DEFAULT_OUTPUT_FILE)
