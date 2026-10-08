@@ -52,6 +52,25 @@ def polygon_parts(geometries):
     return shapely.MultiPolygon(polygons) if polygons else shapely.MultiPolygon()
 
 
+def merge_disjoint_polygons(base, addition):
+    """内部が重ならない2つの面を結合する（接する部分は1つの面にまとめる）。
+
+    全体を union し直すと巨大な面の計算になるため、addition に接する base の部品だけを
+    結合し、それ以外の部品はそのまま残す。接しない部品は結合しても変わらないので結果は同じ。
+    """
+    import shapely
+
+    if base is None or base.is_empty:
+        return polygon_parts([addition])
+    if addition is None or addition.is_empty:
+        return base
+    parts = shapely.get_parts(polygon_parts([base]))
+    touching = set(shapely.STRtree(parts).query(addition, predicate="intersects").tolist())
+    untouched = [part for index, part in enumerate(parts) if index not in touching]
+    joined = shapely.union_all([*(parts[i] for i in sorted(touching)), addition])
+    return polygon_parts([shapely.MultiPolygon(untouched), joined]) if untouched else polygon_parts([joined])
+
+
 def dissolve_input_values(depth_gpd):
     return depth_gpd.dissolve(by="value").reset_index()
 def _extract_polygonal(geom):

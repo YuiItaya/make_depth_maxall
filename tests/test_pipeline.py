@@ -70,6 +70,20 @@ class PipelineTest(TempWorkdirTestCase):
         # 通常データのランク1は、低優先のランク3に上書きされない
         self.assertRanks(out, expected_ranks(normal, extra))
 
+    def test_low_priority_with_many_normal_ranks(self):
+        # 通常データが3ランク以上あると、低優先データは「最下位ランク」と「それより上の和」を順に引く
+        normal = [(1, box(139.00, 36.00, 139.06, 36.03)), (2, box(139.01, 36.00, 139.03, 36.03)),
+                  (3, box(139.02, 36.01, 139.025, 36.02)), (5, box(139.04, 36.00, 139.05, 36.02))]
+        extra = [(4, box(139.005, 36.02, 139.08, 36.05)), (1, box(139.055, 36.00, 139.09, 36.025))]
+        a = write_shp(self.tmp / "normal.shp", normal)
+        b = write_shp(self.tmp / "extra.shp", extra)
+        out, cfg = self.config([{"path": a, "field": "rank", "group": "normal"},
+                                {"path": b, "field": "rank", "group": "extra", "is_extra": True}])
+        self.run_pipeline(cfg)
+        self.assertRanks(out, expected_ranks(normal, extra))
+        # 出力は rank の昇順（以前のランク別集約と同じ並び）
+        self.assertEqual(gpd.read_file(out)["rank"].tolist(), sorted(expected_ranks(normal, extra)))
+
     def test_output_is_2d_in_requested_crs_and_field(self):
         z_square = Polygon([(139.00, 36.00, 5), (139.02, 36.00, 5), (139.02, 36.02, 5), (139.00, 36.02, 5)])
         path = write_shp(self.tmp / "z.shp", [(2, z_square)])

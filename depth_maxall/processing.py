@@ -27,7 +27,13 @@ from .constants import (
     SPLIT_PATH,
 )
 from .errors import InputDataError
-from .geospatial import clip_to_bounds, dissolve_input_values, polygon_parts, repair_output_geometries
+from .geospatial import (
+    clip_to_bounds,
+    dissolve_input_values,
+    merge_disjoint_polygons,
+    polygon_parts,
+    repair_output_geometries,
+)
 from .io_utils import read_geofile, read_shapefile, read_shapefile_attributes, write_geofile
 from .utils import create_directory, format_elapsed_time, format_values, sanitize_filename
 from .validation import (
@@ -251,12 +257,40 @@ def process_shapefiles(
                 )
 
     return reports
+def _dissolve_rank_files(files, gpkg_file):
+    """同一ランクの分解結果を1つに結合して書き出す（子プロセスでも実行する）。"""
+    rank_gdfs = [read_geofile(rank_x, encoding='shift-jis') for rank_x in files]
+    RANKX_gpd = gpd.GeoDataFrame(pd.concat(rank_gdfs, ignore_index=True), crs=rank_gdfs[0].crs)
+    RANKX_gpd["value"] = RANKX_gpd["value"].astype(int)
+    RANKX_gpd = RANKX_gpd.dissolve()
+    write_geofile(RANKX_gpd, filename=gpkg_file, driver="GPKG", encoding="shift-jis")
+
+
+def _dissolve_ranks(split_path, rank_path, rank_values, parallel):
+    jobs = [
+        (value, sorted(split_path.glob(f'*_{value}.gpkg')), rank_path / f'Rank_{value}.gpkg')
+        for value in rank_values
+    ]
+    if not parallel or len(jobs) < 2:
+        for value, files, gpkg_file in jobs:
+            print("    " + f"RANK{value}をディゾルブ中・・・")
+            _dissolve_rank_files(files, gpkg_file)
+        return
+    # ランクごとの結合は互いに独立なので並列に処理する
+    print("    " + f"RANK{','.join(str(v) for v, _, _ in jobs)}を並列にディゾルブ中・・・", flush=True)
+    with ProcessPoolExecutor(max_workers=min(len(jobs), os.cpu_count() or 1)) as executor:
+        futures = [executor.submit(_dissolve_rank_files, files, gpkg_file) for _, files, gpkg_file in jobs]
+        for future in futures:
+            future.result()
+
+
 def process_ranked_data(
     EX,
     split_path=SPLIT_PATH,
     rank_path=RANK_PATH,
     extra_split_path=EXTRA_SPLIT_PATH,
     extra_rank_path=EXTRA_RANK_PATH,
+    parallel=False,
 ):
     print('2/4_同一ランクを結合します。')
     split_path = Path(split_path)
@@ -270,25 +304,14 @@ def process_ranked_data(
             '警告：最終出力対象となるランクが存在しないため、処理を終了します。'
         )
 
-    for value in RANK_set:
-        print("    " + f"RANK{value}をディゾルブ中・・・")
-        rank_gdfs = []
-        for rank_x in split_path.glob(f'*_{value}.gpkg'):
-            rank_x_gpd = read_geofile(rank_x, encoding='shift-jis')
-            rank_gdfs.append(rank_x_gpd)
-
-        RANKX_gpd = gpd.GeoDataFrame(pd.concat(rank_gdfs, ignore_index=True), crs=rank_gdfs[0].crs)
-        RANKX_gpd["value"] = RANKX_gpd["value"].astype(int)
-        RANKX_gpd = RANKX_gpd.dissolve()
-        gpkg_file = rank_path / f'Rank_{value}.gpkg'
-        write_geofile(RANKX_gpd, filename=gpkg_file, driver="GPKG", encoding="shift-jis")
+    _dissolve_ranks(split_path, rank_path, RANK_set, parallel)
 
     EX_RANK_set = []
     if EX:
-        EX_RANK_set = process_extra_files(extra_split_path, extra_rank_path)
+        EX_RANK_set = process_extra_files(extra_split_path, extra_rank_path, parallel=parallel)
 
     return RANK_set, EX_RANK_set
-def process_extra_files(extra_split_path=EXTRA_SPLIT_PATH, extra_rank_path=EXTRA_RANK_PATH):
+def process_extra_files(extra_split_path=EXTRA_SPLIT_PATH, extra_rank_path=EXTRA_RANK_PATH, parallel=False):
     print("    " + '低優先ファイルを処理します。')
     extra_split_path = Path(extra_split_path)
     extra_rank_path = Path(extra_rank_path)
@@ -298,20 +321,15 @@ def process_extra_files(extra_split_path=EXTRA_SPLIT_PATH, extra_rank_path=EXTRA
         print("    " + '低優先ファイルに最終出力対象ランクは存在しませんでした。')
         return EX_RANK_set
 
-    for value in EX_RANK_set:
-        print("    " + f"RANK{value}をディゾルブ中・・・")
-        rank_gdfs = []
-        for rank_x in extra_split_path.glob(f'*_{value}.gpkg'):
-            rank_x_gpd = read_geofile(rank_x, encoding='shift-jis')
-            rank_gdfs.append(rank_x_gpd)
-
-        RANKX_gpd = gpd.GeoDataFrame(pd.concat(rank_gdfs, ignore_index=True), crs=rank_gdfs[0].crs)
-        RANKX_gpd["value"] = RANKX_gpd["value"].astype(int)
-        RANKX_gpd = RANKX_gpd.dissolve()
-        gpkg_file = extra_rank_path / f'Rank_{value}.gpkg'
-        write_geofile(RANKX_gpd, filename=gpkg_file, driver="GPKG", encoding="shift-jis")
+    _dissolve_ranks(extra_split_path, extra_rank_path, EX_RANK_set, parallel)
 
     return EX_RANK_set
+def _difference_wkb(geom_wkb, other_wkb):
+    """差分を子プロセスで求める（形状は WKB で受け渡す）。"""
+    result = shapely.difference(shapely.from_wkb(geom_wkb), shapely.from_wkb(other_wkb))
+    return shapely.to_wkb(polygon_parts([result]))
+
+
 def generate_final_output(
     EX,
     RANK_set,
@@ -320,6 +338,7 @@ def generate_final_output(
     output_epsg=None,
     rank_path=RANK_PATH,
     extra_rank_path=EXTRA_RANK_PATH,
+    parallel=False,
 ):
     print('3/4_ランク間の重なりを判定し、重複する低ランクを削除します。')
     rank_path = Path(rank_path)
@@ -328,25 +347,44 @@ def generate_final_output(
     # 高いランクから順に「そのランクの面 − より高いランクの面の和」を残す。
     # 以前は union の重ね合わせ→ランク別に集約→上位(99)を除外としていたが、
     # 結果は差分と同じで、巨大な面どうしの重ね合わせを避けられるため大幅に速い。
-    output_rows = []
-    higher_union = None
+    # 差分は上位ランクの和さえ決まれば互いに独立なので、parallel 時は和の計算と並行して求める。
+    rank_values = list(reversed(RANK_set))
+    rank_geoms = {}
     crs = None
-    for value in reversed(RANK_set):
+    for value in rank_values:
         rank_gpd = read_geofile(rank_path / f'Rank_{value}.gpkg', encoding='shift-jis')
         crs = rank_gpd.crs
-        rank_geom = polygon_parts(rank_gpd.geometry.values)
-        if higher_union is None:
-            print("    " + f"RANK{value}をコピー中・・・")
-            remaining = rank_geom
-            higher_union = rank_geom
-        else:
-            print("    " + f"RANK{value}から上位ランクを除外中・・・")
-            remaining = shapely.difference(rank_geom, higher_union)
-            higher_union = shapely.union(higher_union, rank_geom)
-        remaining = polygon_parts([remaining])
-        if not remaining.is_empty:
-            output_rows.append({"value": int(value), "geometry": remaining})
+        rank_geoms[value] = polygon_parts(rank_gpd.geometry.values)
 
+    print("    " + f"RANK{rank_values[0]}をコピー中・・・")
+    remaining = {rank_values[0]: rank_geoms[rank_values[0]]}
+    use_pool = parallel and len(rank_values) > 2
+    executor = ProcessPoolExecutor(max_workers=min(len(rank_values), os.cpu_count() or 1)) if use_pool else None
+    futures = {}
+    higher_union = rank_geoms[rank_values[0]]
+    try:
+        for index, value in enumerate(rank_values[1:], 1):
+            print("    " + f"RANK{value}から上位ランクを除外中・・・", flush=True)
+            if executor:
+                futures[value] = executor.submit(
+                    _difference_wkb, shapely.to_wkb(rank_geoms[value]), shapely.to_wkb(higher_union))
+            else:
+                remaining[value] = polygon_parts([shapely.difference(rank_geoms[value], higher_union)])
+            # 最下位ランクまで足した和は低優先データにしか使わないため作らない（低優先側で2段階に引く）
+            if index < len(rank_values) - 1:
+                higher_union = shapely.union(higher_union, rank_geoms[value])
+        for value, future in futures.items():
+            remaining[value] = shapely.from_wkb(future.result())
+    finally:
+        if executor:
+            executor.shutdown()
+    lowest = rank_values[-1]
+    union_above_lowest = higher_union if len(rank_values) > 1 else None
+
+    output_rows = [
+        {"value": int(value), "geometry": remaining[value]}
+        for value in rank_values if not remaining[value].is_empty
+    ]
     RANK_higher_gpd_copy = gpd.GeoDataFrame(output_rows, geometry="geometry", crs=crs)
 
     # 低優先ファイルは、通常データが無い範囲だけを各ランクのまま追加する
@@ -357,21 +395,28 @@ def generate_final_output(
         if not ALL_EX_RANK:
             print("    " + '出力対象となる低優先ファイルはありませんでした。')
         else:
-            extra_rows = []
+            extra_by_value = {}
             for extra_gpd in ALL_EX_RANK:
                 for value, group in extra_gpd.groupby("value"):
-                    extra_geom = polygon_parts(group.geometry.values)
-                    if higher_union is not None:
-                        extra_geom = polygon_parts([shapely.difference(extra_geom, higher_union)])
-                    if not extra_geom.is_empty and int(value) != 0:
-                        extra_rows.append({"value": int(value), "geometry": extra_geom})
-            if extra_rows:
+                    if int(value) == 0:
+                        continue
+                    # 通常データ全体の和の代わりに、最下位ランクと「それより上の和」を順に引く
+                    # （低優先データは小さいので、巨大な和を作るより速い。結果は同じ）
+                    extra_geom = shapely.difference(polygon_parts(group.geometry.values), rank_geoms[lowest])
+                    if union_above_lowest is not None:
+                        extra_geom = shapely.difference(extra_geom, union_above_lowest)
+                    extra_geom = polygon_parts([extra_geom])
+                    if not extra_geom.is_empty:
+                        extra_by_value[int(value)] = merge_disjoint_polygons(
+                            extra_by_value.get(int(value)), extra_geom)
+            if extra_by_value:
+                merged = {int(row["value"]): row["geometry"] for row in output_rows}
+                for value, extra_geom in extra_by_value.items():
+                    merged[value] = merge_disjoint_polygons(merged.get(value), extra_geom)
+                # 以前のランク別集約（dissolve）と同じく rank の昇順に並べる
                 RANK_higher_gpd_copy = gpd.GeoDataFrame(
-                    pd.concat([RANK_higher_gpd_copy, gpd.GeoDataFrame(extra_rows, geometry="geometry", crs=crs)],
-                              ignore_index=True),
-                    crs=crs,
-                )
-                RANK_higher_gpd_copy = RANK_higher_gpd_copy.dissolve(by='value').reset_index()
+                    [{"value": v, "geometry": merged[v]} for v in sorted(merged)],
+                    geometry="geometry", crs=crs)
 
     print('4/4_シェープファイル出力中・・・')
     output_path = Path(output_path or DEFAULT_OUTPUT_FILE)
@@ -448,6 +493,7 @@ def run_processing_pass(
     extra_split_path,
     extra_rank_path,
     reuse_split=None,
+    parallel=False,
 ):
     has_extra = any(item.get("is_extra") for item in input_items)
     create_directory(split_path, clean=True)
@@ -476,6 +522,7 @@ def run_processing_pass(
             rank_path=rank_path,
             extra_split_path=extra_split_path,
             extra_rank_path=extra_rank_path,
+            parallel=parallel,
         )
     with stage_timer('3-4 重なり削除・出力'):
         generate_final_output(
@@ -486,6 +533,7 @@ def run_processing_pass(
             output_epsg=processing.get("output_epsg"),
             rank_path=rank_path,
             extra_rank_path=extra_rank_path,
+            parallel=parallel,
         )
     return process_reports
 def _run_group_job(job):
@@ -609,6 +657,8 @@ def run_pipeline(config):
             rank_path=RANK_PATH,
             extra_split_path=EXTRA_SPLIT_PATH,
             extra_rank_path=EXTRA_RANK_PATH,
+            # 全河川は単独で処理するので工程2・3も並列にする（河川別出力はグループ単位で並列済み）
+            parallel=True,
         )
 
     if processing.get("output_group_files", False):

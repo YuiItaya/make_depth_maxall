@@ -8,7 +8,7 @@ from shapely.geometry import LineString, MultiPolygon, Point, box
 from helpers import TempWorkdirTestCase, write_shp
 from depth_maxall.config import normalize_config
 from depth_maxall.errors import InputDataError
-from depth_maxall.geospatial import clip_to_bounds, normalize_clip_bounds, polygon_parts
+from depth_maxall.geospatial import clip_to_bounds, merge_disjoint_polygons, normalize_clip_bounds, polygon_parts
 from depth_maxall.validation import (
     normalize_fixed_value,
     validate_output_field_name,
@@ -124,6 +124,17 @@ class GeometryTest(unittest.TestCase):
     def test_polygon_parts_of_nothing_is_empty(self):
         self.assertTrue(polygon_parts([LineString([(0, 0), (1, 1)])]).is_empty)
         self.assertTrue(polygon_parts([]).is_empty)
+
+    def test_merge_disjoint_polygons_joins_only_touching_parts(self):
+        base = MultiPolygon([box(0, 0, 1, 1), box(5, 5, 6, 6)])
+        addition = box(1, 0, 2, 1)  # 左の正方形に接する
+        result = merge_disjoint_polygons(base, addition)
+        self.assertTrue(result.is_valid)
+        self.assertAlmostEqual(result.area, 3.0)
+        self.assertEqual(shapely.get_num_geometries(result), 2)  # 接した2つは1つの面になる
+        self.assertTrue(result.equals(shapely.union_all([base, addition])))
+        self.assertTrue(merge_disjoint_polygons(None, addition).equals(addition))
+        self.assertTrue(merge_disjoint_polygons(base, shapely.Polygon()).equals(base))
 
     def test_clip_bounds_validation(self):
         self.assertIsNone(normalize_clip_bounds(None))
